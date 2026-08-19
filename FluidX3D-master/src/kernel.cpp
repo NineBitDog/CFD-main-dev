@@ -3054,10 +3054,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 		// behavior from joining separate pieces of geometry.
 		// --------------------------------------------------------
 
-		if(
-			inside ||
-			surface
-		) {
+		if(surface) {
 
 			flagsn=
 				(flagsn&~TYPE_BO)|
