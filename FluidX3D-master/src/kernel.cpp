@@ -3568,15 +3568,34 @@ string opencl_c_container() { return R( // ########################## begin of O
 	// A streamline is rendered only if its trajectory actually reaches a
 	// vehicle cell (TYPE_S). We trace once to test contact before drawing,
 	// because drawing during the test would leave behind rejected lines.
+	// A streamline is rendered only if its trajectory comes within 4 lattice
+	// cells of a vehicle surface voxel (TYPE_S). Test first, then render, so
+	// rejected streamlines never draw any pixels.
 	bool hit_vehicle = false;
+	const int contact_radius = 4;
 	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
 		float3 p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			const uint x = (uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
-			const uint y = (uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
-			const uint z = (uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
-			const uxx n = (uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
-			if(flags[n]&TYPE_S) { hit_vehicle=true; break; }
+			const int x = (int)(p1.x+1.5f*(float)def_Nx)%(int)def_Nx;
+			const int y = (int)(p1.y+1.5f*(float)def_Ny)%(int)def_Ny;
+			const int z = (int)(p1.z+1.5f*(float)def_Nz)%(int)def_Nz;
+			const uxx n = (uxx)x+(uxx)(y+z*(int)def_Ny)*(uxx)def_Nx;
+
+			// Search a 4-voxel neighborhood around the streamline point.
+			// This makes the contact distance independent of the exact voxel
+			// centerline of the streamline.
+			for(int dz=-contact_radius; dz<=contact_radius && !hit_vehicle; dz++) {
+				for(int dy=-contact_radius; dy<=contact_radius && !hit_vehicle; dy++) {
+					for(int dx=-contact_radius; dx<=contact_radius; dx++) {
+						if(dx*dx+dy*dy+dz*dz > contact_radius*contact_radius) continue;
+						const int xx=x+dx, yy=y+dy, zz=z+dz;
+						if(xx<0 || xx>=(int)def_Nx || yy<0 || yy>=(int)def_Ny || zz<0 || zz>=(int)def_Nz) continue;
+						const uxx nn=(uxx)xx+(uxx)(yy+zz*(int)def_Ny)*(uxx)def_Nx;
+						if(flags[nn]&TYPE_S) { hit_vehicle=true; break; }
+					}
+				}
+			}
+			if(hit_vehicle) break;
 			if(flags[n]&(TYPE_E|TYPE_I|TYPE_G)) break;
 			const float3 un = load3(n, u); // interpolate_u(p1, u)
 			const float ul = length(un);
@@ -3585,6 +3604,8 @@ string opencl_c_container() { return R( // ########################## begin of O
 			if(def_scale_u*ul<0.1f||p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
 		}
 	}
+	if(!hit_vehicle) return;
+
 	if(!hit_vehicle) return;
 
 	// Contact confirmed: trace again and render the complete streamline in
