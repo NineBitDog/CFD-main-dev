@@ -3399,10 +3399,10 @@ string opencl_c_container() { return R( // ########################## begin of O
 				if(!(flags[n]&(TYPE_S|TYPE_E|TYPE_G))) {
 					const float3 vel = load3(n, u);
 					const float speed = length(vel);
-					const float speed_disturbance = fabs(speed-GRAPHICS_STREAMLINE_U_INF)/fmax(GRAPHICS_STREAMLINE_U_INF, 1.0e-6f);
+					const float speed_disturbance = fabs(speed-0.075f)/fmax(0.075f, 1.0e-6f);
 					const float3 flow_dir = vel/fmax(speed, 1.0e-6f);
 					const float direction_disturbance = 1.0f-dot(flow_dir, (float3)(1.0f, 0.0f, 0.0f));
-					if(speed_disturbance>=GRAPHICS_STREAMLINE_SPEED_THRESHOLD || direction_disturbance>=GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD) {
+					if(speed_disturbance>=0.03f || direction_disturbance>=0.02f) {
 						const float weight = fmin(speed, fabs(speed-0.5f/def_scale_u));
 						sum = fma(weight, speed, sum);
 						traversed_cells_weighted += weight;
@@ -3576,9 +3576,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 	// Freestream is +X for this vehicle setup. A line is affected if any
 	// point has a speed disturbance or direction change above threshold.
 	bool affected = false;
-	const float U_inf = GRAPHICS_STREAMLINE_U_INF;
-	const float speed_threshold = GRAPHICS_STREAMLINE_SPEED_THRESHOLD;
-	const float direction_threshold = GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD;
+	const float U_inf = 0.075f;
+	const float speed_threshold = 0.03f;
+	const float direction_threshold = 0.02f;
 	const float3 freestream_dir = (float3)(1.0f, 0.0f, 0.0f);
 
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
