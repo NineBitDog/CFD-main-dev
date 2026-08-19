@@ -3573,15 +3573,34 @@ string opencl_c_container() { return R( // ########################## begin of O
 	for(uint i=0u; i<15u; i++) camera_cache[i] = camera[i];
 	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
 
-	// First pass: classify the complete trajectory from the velocity field.
-	// A streamline is accepted when either its speed differs from freestream
-	// by at least 3%, or its direction differs by at least 0.02 radians-ish
-	// in the dot-product metric. No pixels are drawn during this pass.
+	// First pass: classify the complete trajectory from the actual inlet flow.
+	// The inlet velocity is sampled at the same y/z position as the seed.
+	// This prevents normal freestream flow from being rendered merely because
+	// the simulation's nominal velocity differs from a hard-coded value.
 	bool affected = false;
-	const float U_inf = 0.075f;
+	const float fallback_U_inf = 0.075f;
 	const float speed_threshold = 0.03f;
 	const float direction_threshold = 0.02f;
-	const float3 freestream_dir = (float3)(1.0f, 0.0f, 0.0f);
+
+	int ref_y = (int)(p.y + 0.5f*(float)def_Ny);
+	int ref_z = (int)(p.z + 0.5f*(float)def_Nz);
+	ref_y = clamp(ref_y, 0, (int)def_Ny-1);
+	ref_z = clamp(ref_z, 0, (int)def_Nz-1);
+
+	float3 freestream = (float3)(fallback_U_inf, 0.0f, 0.0f);
+	bool found_inlet = false;
+	for(uint ix=1u; ix<min(8u, (uint)def_Nx) && !found_inlet; ix++) {
+		const uxx ref_n=(uxx)ix+(uxx)((uint)ref_y+(uint)ref_z*def_Ny)*(uxx)def_Nx;
+		if(!(flags[ref_n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))) {
+			const float3 ref_u=load3(ref_n,u);
+			if(length(ref_u)>1.0e-6f) {
+				freestream=ref_u;
+				found_inlet=true;
+			}
+		}
+	}
+	const float freestream_speed=length(freestream);
+	const float3 freestream_dir=freestream/fmax(freestream_speed,1.0e-6f);
 
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
@@ -3593,8 +3612,8 @@ string opencl_c_container() { return R( // ########################## begin of O
 			if(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
 			const float3 un=load3(nn,u);
 			const float ul=length(un);
-			if(ul<=0.0f) break;
-			const float speed_disturbance=fabs(ul-U_inf)/fmax(U_inf,1.0e-6f);
+			if(ul<=1.0e-6f) break;
+			const float speed_disturbance=fabs(ul-freestream_speed)/fmax(freestream_speed,1.0e-6f);
 			const float3 flow_dir=un/fmax(ul,1.0e-6f);
 			const float direction_disturbance=1.0f-dot(flow_dir,freestream_dir);
 			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) {
