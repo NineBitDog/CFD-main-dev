@@ -3567,9 +3567,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 	// Freestream is +X for this vehicle setup. A line is affected if any
 	// point has a speed disturbance or direction change above threshold.
 	bool affected = false;
-	const float U_inf = GRAPHICS_STREAMLINE_U_INF;
-	const float speed_threshold = GRAPHICS_STREAMLINE_SPEED_THRESHOLD;
-	const float direction_threshold = GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD;
+	const float U_inf = 0.075f;
+	const float speed_threshold = 0.03f;
+	const float direction_threshold = 0.02f;
 	const float3 freestream_dir = (float3)(1.0f, 0.0f, 0.0f);
 
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
@@ -3594,12 +3594,12 @@ string opencl_c_container() { return R( // ########################## begin of O
 			}
 
 			p1+=(dt/ul)*un;
-			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
+			if(def_scale_u*ul<0.1f) break;
 		}
 	}
 	if(!affected) return;
 
-	// Second pass: only affected streamlines are rendered, using the original
+	// Second pass: render only affected streamlines using the original
 	// velocity/density/temperature coloring and full forward/backward path.
 	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
 		float3 p0, p1=p;
@@ -3614,7 +3614,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 			if(ul<=0.0f) break;
 			p0=p1;
 			p1+=(dt/ul)*un;
-			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
+			if(def_scale_u*ul<0.1f) break;
 			int c=0;
 			switch(field_mode) {
 				case 0: c=colorscale_rainbow(def_scale_u*ul); break;
