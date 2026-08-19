@@ -1499,10 +1499,22 @@ string opencl_c_container() { return R( // ########################## begin of O
 	calculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn); // calculate density and velocity fields from fi
 )+"#else"+R( // EQUILIBRIUM_BOUNDARIES
 	if(flagsn_bo==TYPE_E) {
-		rhon = rho[               n]; // apply preset velocity/density
-		uxn  = u[                 n];
-		uyn  = u[    def_N+(ulong)n];
-		uzn  = u[2ul*def_N+(ulong)n];
+		rhon = rho[n];
+		const uint xcoord = coordinates(n).x;
+		const bool inlet_side = xcoord <= 1u;
+		if(inlet_side) {
+			float ramp = clamp((float)t/(float)50000ul, 0.0f, 1.0f);
+			// Smoothstep startup avoids an impulse into the car at t=0.
+			ramp = ramp*ramp*(3.0f-2.0f*ramp);
+			uxn = 0.075f*ramp;
+			uyn = 0.0f;
+			uzn = 0.0f;
+		} else {
+			// Constant-velocity equilibrium outlet.
+			uxn = 0.075f;
+			uyn = 0.0f;
+			uzn = 0.0f;
+		}
 	} else {
 		calculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn); // calculate density and velocity fields from fi
 	}
@@ -3399,9 +3411,15 @@ string opencl_c_container() { return R( // ########################## begin of O
 				if(!(flags[n]&(TYPE_S|TYPE_E|TYPE_G))) {
 					const float3 vel=load3(n,u);
 					const float speed=length(vel);
-					const float speed_disturbance=fabs(speed-0.075f)/fmax(0.075f,1.0e-6f);
+					const uint uy=(uint)clamp(xyz.y,0,(int)def_Ny-1);
+					const uint uz=(uint)clamp(xyz.z,0,(int)def_Nz-1);
+					const uxx upstream_n=index((uint3)(min(1u,(uint)def_Nx-1u),uy,uz));
+					const float3 upstream_u=load3(upstream_n,u);
+					const float upstream_speed=fmax(length(upstream_u),1.0e-6f);
+					const float3 upstream_dir=upstream_u/upstream_speed;
+					const float speed_disturbance=fabs(speed-upstream_speed)/upstream_speed;
 					const float3 flow_dir=vel/fmax(speed,1.0e-6f);
-					const float direction_disturbance=1.0f-dot(flow_dir,(float3)(1.0f,0.0f,0.0f));
+					const float direction_disturbance=1.0f-dot(flow_dir,upstream_dir);
 					if(speed_disturbance>=0.03f || direction_disturbance>=0.02f) {
 						const float weight=fmin(speed,fabs(speed-0.5f/def_scale_u));
 						sum=fma(weight,speed,sum);
@@ -3596,8 +3614,6 @@ string opencl_c_container() { return R( // ########################## begin of O
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			// Only sample while inside this domain. Modulo is used solely for a
-			// valid in-bounds cell index, so a streamline cannot wrap across a face.
 			if(p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 			const uint xx=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
 			const uint yy=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
@@ -3609,10 +3625,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 			if(ul<=1.0e-6f) break;
 			const float speed_disturbance=fabs(ul-freestream_speed)/fmax(freestream_speed,1.0e-6f);
 			const float direction_disturbance=1.0f-dot(un/fmax(ul,1.0e-6f),freestream_dir);
-			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) {
-				affected=true;
-				break;
-			}
+			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) { affected=true; break; }
 			const float3 next_p1=p1+(dt/ul)*un;
 			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
 			p1=next_p1;
