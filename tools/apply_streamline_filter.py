@@ -6,7 +6,7 @@ KERNEL = Path(__file__).resolve().parents[1] / "FluidX3D-master" / "src" / "kern
 SPEED_THRESHOLD = "0.03f"
 DIRECTION_THRESHOLD = "0.02f"
 FALLBACK_U_INF = "0.075f"
-INLET_RAMP_STEPS = "50000ul"
+INLET_RAMP_STEPS = "1000ul"
 
 START = ')+"#ifndef TEMPERATURE"+R(\n)+R(kernel void graphics_streamline'
 END = ')+"#ifndef TEMPERATURE"+R(\n)+R(kernel void graphics_q_field'
@@ -68,7 +68,7 @@ if sc_end < 0:
 sc = s[sc_start:sc_end]
 
 boundary_pattern = r"\tif\(flagsn_bo==TYPE_E\) \{.*?\n\t\} else \{\n\t\tcalculate_rho_u\(fhn, &rhon, &uxn, &uyn, &uzn\);"
-boundary_replacement = '''\tif(flagsn_bo==TYPE_E) {\n\t\trhon = rho[n];\n\t\tconst uint xcoord = coordinates(n).x;\n\t\tconst bool inlet_side = xcoord <= 1u;\n\t\tif(inlet_side) {\n\t\t\tfloat ramp = clamp((float)t/(float)50000ul, 0.0f, 1.0f);\n\t\t\t// Smoothstep startup avoids an impulse into the car at t=0.\n\t\t\tramp = ramp*ramp*(3.0f-2.0f*ramp);\n\t\t\tuxn = 0.075f*ramp;\n\t\t\tuyn = 0.0f;\n\t\t\tuzn = 0.0f;\n\t\t} else {\n\t\t\t// Constant-velocity equilibrium outlet.\n\t\t\tuxn = 0.075f;\n\t\t\tuyn = 0.0f;\n\t\t\tuzn = 0.0f;\n\t\t}\n\t} else {\n\t\tcalculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn);'''
+boundary_replacement = '''\tif(flagsn_bo==TYPE_E) {\n\t\trhon = rho[n];\n\t\tconst uint xcoord = coordinates(n).x;\n\t\tconst bool inlet_side = xcoord <= 1u;\n\t\tif(inlet_side) {\n\t\t\tfloat ramp = clamp((float)t/(float)1000ul, 0.0f, 1.0f);\n\t\t\t// Smoothstep startup avoids an impulse into the car at t=0.\n\t\t\tramp = ramp*ramp*(3.0f-2.0f*ramp);\n\t\t\tuxn = 0.075f*ramp;\n\t\t\tuyn = 0.0f;\n\t\t\tuzn = 0.0f;\n\t\t} else {\n\t\t\t// Constant-velocity equilibrium outlet.\n\t\t\tuxn = 0.075f;\n\t\t\tuyn = 0.0f;\n\t\t\tuzn = 0.0f;\n\t\t}\n\t} else {\n\t\tcalculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn);'''
 sc2, count = re.subn(boundary_pattern, boundary_replacement, sc, count=1, flags=re.S)
 if count != 1:
     raise RuntimeError("stream_collide equilibrium-boundary block not found")
