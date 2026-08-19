@@ -3596,13 +3596,12 @@ string opencl_c_container() { return R( // ########################## begin of O
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			// Do not wrap across a domain face. A reflected boundary cell must terminate
-			// the trajectory rather than re-entering from the opposite side.
+			// Only sample while inside this domain. Modulo is used solely for a
+			// valid in-bounds cell index, so a streamline cannot wrap across a face.
 			if(p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
-			const uint xx=(uint)(p1.x+1.5f*(float)def_Nx);
-			const uint yy=(uint)(p1.y+1.5f*(float)def_Ny);
-			const uint zz=(uint)(p1.z+1.5f*(float)def_Nz);
-			if(xx>=def_Nx || yy>=def_Ny || zz>=def_Nz) break;
+			const uint xx=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
+			const uint yy=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
+			const uint zz=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
 			const uxx nn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
 			if(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
 			const float3 un=load3(nn,u);
@@ -3610,9 +3609,13 @@ string opencl_c_container() { return R( // ########################## begin of O
 			if(ul<=1.0e-6f) break;
 			const float speed_disturbance=fabs(ul-freestream_speed)/fmax(freestream_speed,1.0e-6f);
 			const float direction_disturbance=1.0f-dot(un/fmax(ul,1.0e-6f),freestream_dir);
-			const bool point_disturbed=speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold;
-			if(point_disturbed) { affected=true; break; }
-			p1+=(dt/ul)*un;
+			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) {
+				affected=true;
+				break;
+			}
+			const float3 next_p1=p1+(dt/ul)*un;
+			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
+			p1=next_p1;
 			if(def_scale_u*ul<0.1f) break;
 		}
 	}
@@ -3631,7 +3634,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 			const float ul=length(un);
 			if(ul<=0.0f) break;
 			p0=p1;
-			p1+=(dt/ul)*un;
+			const float3 next_p1=p1+(dt/ul)*un;
+			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
+			p1=next_p1;
 			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 			int c=0;
 			switch(field_mode) {
