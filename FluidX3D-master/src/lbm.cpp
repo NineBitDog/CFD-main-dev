@@ -685,6 +685,92 @@ void LBM_Domain::voxelize_mesh_on_device(
   kernel_voxelize_mesh.run();
 }
 
+void LBM_Domain::enqueue_unvoxelize_mesh_on_device(
+	const Mesh* mesh,
+	const uchar flag
+) {
+	if(!mesh) return;
+
+	const uint triangle_number = mesh->triangle_number;
+
+	Memory<float> p0(
+		device,
+		3ull*triangle_number,
+		1u,
+		mesh->p0
+	);
+
+	Memory<float> p1(
+		device,
+		3ull*triangle_number,
+		1u,
+		mesh->p1
+	);
+
+	Memory<float> p2(
+		device,
+		3ull*triangle_number,
+		1u,
+		mesh->p2
+	);
+
+	Memory<float> bounding_box_and_velocity(
+		device,
+		16u,
+		1u
+	);
+
+	bounding_box_and_velocity[0] =
+		as_float(triangle_number);
+
+	// Bounding box.
+	bounding_box_and_velocity[1] = mesh->pmin.x;
+	bounding_box_and_velocity[2] = mesh->pmin.y;
+	bounding_box_and_velocity[3] = mesh->pmin.z;
+
+	bounding_box_and_velocity[4] = mesh->pmax.x;
+	bounding_box_and_velocity[5] = mesh->pmax.y;
+	bounding_box_and_velocity[6] = mesh->pmax.z;
+
+	// No mesh velocity.
+	for(uint i=7u; i<16u; i++) {
+		bounding_box_and_velocity[i] = 0.0f;
+	}
+
+	for(uint direction=0u; direction<3u; direction++) {
+
+		const ulong A =
+			direction==0u ?
+				(ulong)Ny*(ulong)Nz :
+			direction==1u ?
+				(ulong)Nz*(ulong)Nx :
+				(ulong)Nx*(ulong)Ny;
+
+		Kernel kernel(
+			device,
+			A,
+			"voxelize_mesh",
+			direction,
+			fi,
+			u,
+			flags,
+			0ull,
+			flag,
+			p0,
+			p1,
+			p2,
+			bounding_box_and_velocity
+		);
+
+		p0.write_to_device();
+		p1.write_to_device();
+		p2.write_to_device();
+		bounding_box_and_velocity.write_to_device();
+
+		kernel.run();
+	}
+}
+
 string LBM_Domain::device_defines() const {
   return "\n	#define def_Nx " + to_string(Nx) +
          "u"
