@@ -2,7 +2,6 @@ from pathlib import Path
 
 KERNEL = Path(__file__).resolve().parents[1] / "FluidX3D-master" / "src" / "kernel.cpp"
 
-# These values are emitted directly into the generated OpenCL source.
 U_INF = "0.075f"
 SPEED_THRESHOLD = "0.03f"
 DIRECTION_THRESHOLD = "0.02f"
@@ -10,7 +9,6 @@ DIRECTION_THRESHOLD = "0.02f"
 CURRENT_MARKER = "\t// A streamline is rendered only if its trajectory actually reaches a\n"
 ALREADY_PATCHED = "\t// First pass: classify the streamline from the velocity field only."
 
-# Use a normal string, not an f-string. OpenCL contains many literal braces.
 CLASSIFY = r'''\t// First pass: classify the streamline from the velocity field only.
 \t// Freestream is +X. Render only if speed or direction is disturbed.
 \tbool affected = false;
@@ -30,10 +28,10 @@ CLASSIFY = r'''\t// First pass: classify the streamline from the velocity field 
 \t\t\tconst float3 un=load3(n,u);
 \t\t\tconst float ul=length(un);
 \t\t\tif(ul<=0.0f) break;
-\t\t\tconst float speed_disturbance=fabs(ul-U_inf)/fmax(U_inf,1.0e-6f);
+\t\t\tconst float speed_disturbance=fabs(ul-__U_INF__)/fmax(__U_INF__,1.0e-6f);
 \t\t\tconst float3 flow_dir=un/fmax(ul,1.0e-6f);
 \t\t\tconst float direction_disturbance=1.0f-dot(flow_dir,freestream_dir);
-\t\t\tif(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) {
+\t\t\tif(speed_disturbance>=__SPEED_THRESHOLD__ || direction_disturbance>=__DIRECTION_THRESHOLD__) {
 \t\t\t\taffected=true;
 \t\t\t\tbreak;
 \t\t\t}
@@ -44,7 +42,6 @@ CLASSIFY = r'''\t// First pass: classify the streamline from the velocity field 
 \tif(!affected) return;
 
 '''
-
 CLASSIFY = (CLASSIFY
     .replace("__U_INF__", U_INF)
     .replace("__SPEED_THRESHOLD__", SPEED_THRESHOLD)
@@ -52,12 +49,15 @@ CLASSIFY = (CLASSIFY
 
 s = KERNEL.read_text(encoding="utf-8")
 
+# Always sanitize identifiers emitted by older versions of this patcher.
+s = s.replace("GRAPHICS_STREAMLINE_U_INF", U_INF)
+s = s.replace("GRAPHICS_STREAMLINE_SPEED_THRESHOLD", SPEED_THRESHOLD)
+s = s.replace("GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD", DIRECTION_THRESHOLD)
+
 if ALREADY_PATCHED not in s:
     pos = s.find(CURRENT_MARKER)
     if pos < 0:
         raise RuntimeError("graphics_streamline insertion point not found")
     s = s[:pos] + CURRENT_MARKER + CLASSIFY + s[pos + len(CURRENT_MARKER):]
-    KERNEL.write_text(s, encoding="utf-8")
-else:
-    # The kernel is already patched; leave it untouched so the build is idempotent.
-    pass
+
+KERNEL.write_text(s, encoding="utf-8")
