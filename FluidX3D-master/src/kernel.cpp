@@ -3563,131 +3563,70 @@ string opencl_c_container() { return R( // ########################## begin of O
 
 )+"#ifndef TEMPERATURE"+R(
 )+R(kernel void graphics_streamline(const global float* camera, global int* bitmap, global int* zbuffer, const int field_mode, const int slice_mode, const int slice_x, const int slice_y, const int slice_z, const global float* rho, const global float* u, const global uchar* flags) {
-)+"#else"+R( // TEMPERATURE
-)+R(kernel void graphics_streamline(const global float* camera, global int* bitmap, global int* zbuffer, const int field_mode, const int slice_mode, const int slice_x, const int slice_y, const int slice_z, const global float* rho, const global float* u, const global uchar* flags, const global float* T) {
-)+"#endif"+R( // TEMPERATURE
-	const uxx n = get_global_id(0);
-	const float3 ps = (float3)((float)slice_x+0.5f-0.5f*(float)def_Nx, (float)slice_y+0.5f-0.5f*(float)def_Ny, (float)slice_z+0.5f-0.5f*(float)def_Nz);
-)+"#ifndef D2Q9"+R(
-	if(n>=(uxx)(def_Nx/def_streamline_sparse)*(uxx)(def_Ny/def_streamline_sparse)*(uxx)(def_Nz/def_streamline_sparse)) return;
-	const uint z = (uint)(n/(uxx)((def_Nx/def_streamline_sparse)*(def_Ny/def_streamline_sparse)));
-	const uint t = (uint)(n%(uxx)((def_Nx/def_streamline_sparse)*(def_Ny/def_streamline_sparse)));
-	const uint y = (uint)(t/(def_Nx/def_streamline_sparse));
-	const uint x = (uint)(t%(def_Nx/def_streamline_sparse));
-	float3 p = (float)def_streamline_sparse*((float3)((float)x+0.5f, (float)y+0.5f, (float)z+0.5f))-0.5f*((float3)((float)def_Nx, (float)def_Ny, (float)def_Nz));
-	const bool rx=fabs(p.x-ps.x)>0.5f*(float)def_streamline_sparse, ry=fabs(p.y-ps.y)>0.5f*(float)def_streamline_sparse, rz=fabs(p.z-ps.z)>0.5f*(float)def_streamline_sparse;
-)+"#else"+R( // D2Q9
-	if(n>=(def_Nx/def_streamline_sparse)*(def_Ny/def_streamline_sparse)) return;
-	const uint y = (uint)(n/(uxx)(def_Nx/def_streamline_sparse));
-	const uint x = (uint)(n%(uxx)(def_Nx/def_streamline_sparse));
-	float3 p = ((float3)((float)def_streamline_sparse*((float)x+0.5f), (float)def_streamline_sparse*((float)y+0.5f), 0.5f))-0.5f*((float3)((float)def_Nx, (float)def_Ny, (float)def_Nz));
-	const bool rx=fabs(p.x-ps.x)>0.5f*(float)def_streamline_sparse, ry=fabs(p.y-ps.y)>0.5f*(float)def_streamline_sparse, rz=true;
-)+"#endif"+R( // D2Q9
-	if((slice_mode==1&&rx)||(slice_mode==2&&ry)||(slice_mode==3&&rz)||(slice_mode==4&&rx&&rz)||(slice_mode==5&&rx&&ry&&rz)||(slice_mode==6&&ry&&rz)||(slice_mode==7&&rx&&ry)) return;
-	if((slice_mode==1||slice_mode==5||slice_mode==4||slice_mode==7)&!rx) p.x = ps.x;
-	if((slice_mode==2||slice_mode==5||slice_mode==6||slice_mode==7)&!ry) p.y = ps.y;
-	if((slice_mode==3||slice_mode==5||slice_mode==4||slice_mode==6)&!rz) p.z = ps.z;
-	float camera_cache[15];
-	for(uint i=0u; i<15u; i++) camera_cache[i] = camera[i];
-	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
-
-	// First pass: accept a streamline only when its trajectory both
-	// comes close to the vehicle and experiences a real velocity disturbance.
-	bool near_vehicle = false;
+	// First pass: classify the streamline from the velocity field only.
+	// Freestream is +X for this vehicle setup. A line is affected if any
+	// point has a speed disturbance or direction change above threshold.
 	bool affected = false;
-	const float fallback_U_inf = 0.075f;
-	const float speed_threshold = 0.03f;
-	const float direction_threshold = 0.02f;
+	const float U_inf = GRAPHICS_STREAMLINE_U_INF;
+	const float speed_threshold = GRAPHICS_STREAMLINE_SPEED_THRESHOLD;
+	const float direction_threshold = GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD;
+	const float3 freestream_dir = (float3)(1.0f, 0.0f, 0.0f);
 
-	int ref_y = clamp((int)(p.y + 0.5f*(float)def_Ny), 0, (int)def_Ny-1);
-	int ref_z = clamp((int)(p.z + 0.5f*(float)def_Nz), 0, (int)def_Nz-1);
-	float3 freestream = (float3)(fallback_U_inf, 0.0f, 0.0f);
-	bool found_inlet = false;
-	for(uint ix=1u; ix<min(8u,(uint)def_Nx) && !found_inlet; ix++) {
-		const uxx ref_n=(uxx)ix+(uxx)((uint)ref_y+(uint)ref_z*def_Ny)*(uxx)def_Nx;
-		if(!(flags[ref_n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))) {
-			const float3 ref_u=load3(ref_n,u);
-			if(length(ref_u)>1.0e-6f) { freestream=ref_u; found_inlet=true; }
-		}
-	}
-	const float freestream_speed=length(freestream);
-	const float3 freestream_dir=freestream/fmax(freestream_speed,1.0e-6f);
-
-	for(float dt=-1.0f; dt<=1.0f && !(near_vehicle && affected); dt+=2.0f) {
+	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			if(p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
+			const uint x=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
+			const uint y=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
+			const uint z=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
+			const uxx n=(uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
+			if(flags[n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
 
-			const uint xx=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
-			const uint yy=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
-			const uint zz=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
-			const uxx nn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
-			if(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
+			const float3 un=load3(n,u);
+			const float ul=length(un);
+			if(ul<=0.0f) { affected=true; break; }
 
-			// Cheap radial vehicle proximity test. We sample the 6 axial
-			// directions out to VEHICLE_RADIUS lattice cells. This is enough
-			// to catch nearby trajectories without scanning a large 3-D cube.
-			for(int r=1; r<=VEHICLE_RADIUS && !near_vehicle; r++) {
-				const int dxs[6] = { r, -r, 0, 0, 0, 0 };
-				const int dys[6] = { 0, 0, r, -r, 0, 0 };
-				const int dzs[6] = { 0, 0, 0, 0, r, -r };
-				for(int q=0; q<6; q++) {
-					const int vx=(int)xx+dxs[q];
-					const int vy=(int)yy+dys[q];
-					const int vz=(int)zz+dzs[q];
-					if(vx<0 || vx>=(int)def_Nx || vy<0 || vy>=(int)def_Ny || vz<0 || vz>=(int)def_Nz) continue;
-					const uxx vn=(uxx)vx+(uxx)((uint)vy+(uint)vz*def_Ny)*(uxx)def_Nx;
-					near_vehicle = (flags[vn]&TYPE_S)!=0u;
-					if(near_vehicle) break;
-				}
+			const float speed_disturbance=fabs(ul-U_inf)/fmax(U_inf,1.0e-6f);
+			const float3 flow_dir=un/fmax(ul,1.0e-6f);
+			const float direction_disturbance=1.0f-dot(flow_dir,freestream_dir);
+			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) {
+				affected=true;
+				break;
 			}
 
-			const float3 un=load3(nn,u);
-			const float ul=length(un);
-			if(ul<=1.0e-6f) break;
-			const float speed_disturbance=fabs(ul-freestream_speed)/fmax(freestream_speed,1.0e-6f);
-			const float direction_disturbance=1.0f-dot(un/fmax(ul,1.0e-6f),freestream_dir);
-			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) affected=true;
-
-			const float3 next_p1=p1+(dt/ul)*un;
-			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
-			p1=next_p1;
-			if(def_scale_u*ul<0.1f) break;
+			p1+=(dt/ul)*un;
+			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 		}
 	}
-	if(!(near_vehicle && affected)) return;
+	if(!affected) return;
 
-	// Second pass: only affected trajectories are actually drawn.
+	// Second pass: only affected streamlines are rendered, using the original
+	// velocity/density/temperature coloring and full forward/backward path.
 	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
 		float3 p0, p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			const uint xx=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
-			const uint yy=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
-			const uint zz=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
-			const uxx nn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
-			if(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
-			const float3 un=load3(nn,u);
+			const uint x=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
+			const uint y=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
+			const uint z=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
+			const uxx n=(uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
+			if(flags[n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
+			const float3 un=load3(n,u);
 			const float ul=length(un);
 			if(ul<=0.0f) break;
 			p0=p1;
-			const float3 next_p1=p1+(dt/ul)*un;
-			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
-			p1=next_p1;
+			p1+=(dt/ul)*un;
 			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 			int c=0;
 			switch(field_mode) {
 				case 0: c=colorscale_rainbow(def_scale_u*ul); break;
-				case 1: c=colorscale_twocolor(0.5f+def_scale_rho*(rho[nn]-1.0f)); break;
+				case 1: c=colorscale_twocolor(0.5f+def_scale_rho*(rho[n]-1.0f)); break;
 )+"#ifdef TEMPERATURE"+R(
-				case 2: c=colorscale_iron(0.5f+def_scale_T*(T[nn]-def_T_avg)); break;
-)+"#endif"+R( // TEMPERATURE
+				case 2: c=colorscale_iron(0.5f+def_scale_T*(T[n]-def_T_avg)); break;
+)+"#endif"+R(
 			}
 			draw_line(p0,p1,c,camera_cache,bitmap,zbuffer);
 		}
 	}
-}
-
-)+"#ifndef TEMPERATURE"+R(
+	}
 )+R(kernel void graphics_q_field(const global float* camera, global int* bitmap, global int* zbuffer, const int field_mode, const global float* rho, const global float* u, const global uchar* flags) {
 )+"#else"+R( // TEMPERATURE
 )+R(kernel void graphics_q_field(const global float* camera, global int* bitmap, global int* zbuffer, const int field_mode, const global float* rho, const global float* u, const global uchar* flags, const global float* T) {
