@@ -102,14 +102,45 @@ class Visualizer3D(QWidget):
             self.view.camera.set_range() 
 
     def update_streamlines(self, positions, colors, num_lines, steps_per_line):
-        if positions is None: return
-        total_points = num_lines * steps_per_line
-        idx = np.arange(total_points, dtype=np.uint32)
-        grid = idx.reshape(num_lines, steps_per_line)
-        starts = grid[:, :-1].flatten()
-        ends = grid[:, 1:].flatten()
-        connect = np.stack((starts, ends), axis=1)
-        self.lines_vis.set_data(pos=positions, color=colors, connect=connect)
+        if positions is None or colors is None:
+            return
+
+        positions = np.asarray(positions)
+        colors = np.asarray(colors)
+
+        # Each streamline has its own set of points. solver.py marks a
+        # streamline's points alpha=1 only when that streamline contacted
+        # the vehicle. Remove non-contacting lines before VisPy sees them.
+        color_grid = colors.reshape(num_lines, steps_per_line, 4)
+        visible_lines = np.any(color_grid[:, :, 3] > 0.5, axis=1)
+
+        if not np.any(visible_lines):
+            self.lines_vis.set_data(
+                pos=np.empty((0, 3), dtype=np.float32),
+                color=np.empty((0, 4), dtype=np.float32),
+                connect=np.empty((0, 2), dtype=np.uint32)
+            )
+            return
+
+        pos_grid = positions.reshape(num_lines, steps_per_line, 3)
+        visible_positions = pos_grid[visible_lines].reshape(-1, 3)
+        visible_colors = color_grid[visible_lines].reshape(-1, 4)
+        visible_count = int(np.count_nonzero(visible_lines))
+
+        idx = np.arange(
+            visible_count * steps_per_line,
+            dtype=np.uint32
+        )
+        grid = idx.reshape(visible_count, steps_per_line)
+        starts = grid[:, :-1].reshape(-1)
+        ends = grid[:, 1:].reshape(-1)
+        connect = np.column_stack((starts, ends))
+
+        self.lines_vis.set_data(
+            pos=visible_positions,
+            color=visible_colors,
+            connect=connect
+        )
 
     def set_mesh_visibility(self, visible):
         if self.mesh_vis: self.mesh_vis.visible = visible
@@ -159,7 +190,7 @@ class Visualizer3D(QWidget):
         # To simulate this in VisPy without re-voxelizing/re-loading:
         # We need to know the mesh's original bounding box.
         # But for 'preview' purposes, we can just apply a rough visual scale.
-        # Let's assume the mesh is normalized or we just apply the relative scale x domain_z
+        # Let's assume the STL is normalized or we just apply the relative scale x domain_z
         
         # SIMULATION LOGIC RECAP:
         # FluidX3D Voxelize: Scales mesh so its *largest dimension* equals `size`.
@@ -393,10 +424,10 @@ class ResultsViewer(QWidget):
         add_plane((cx, ymin+dy/2, zmin+dz/2), (1,0,0), dy, dz, 'red', f"X Plane")
         
         # Y Plane (Green)
-        add_plane((xmin+dx/2, cy, zmin+dz/2), (0,1,0), dx, dz, 'green', f"Y Plane")
+        add_plane((xmin+dx/2, cy, zmin+dz/2), (0,1,0), dx, dz, 'Y Plane')
 
         # Z Plane (Blue)
-        add_plane((xmin+dx/2, ymin+dy/2, cz), (0,0,1), dx, dy, 'blue', f"Z Plane")
+        add_plane((xmin+dx/2, ymin+dy/2, cz), (0,0,1), dx, dy, 'Z Plane')
 
     def apply_cut(self, x_pct, y_pct, z_pct):
         if self.mesh is None or self.mesh_bounds is None: return
@@ -450,14 +481,6 @@ class ResultsViewer(QWidget):
                 # Sigmoid is good default, but let's shift it based on threshold
                 # If threshold is 0.3, we want 0-0.3 to be transparent.
                 # opacity=[0, ..., 0, val, ..., 1]
-                t = getattr(self, 'vol_threshold', 0.2)
-                o = getattr(self, 'vol_opacity', 0.5)
-                
-                # Simple logic: 5 points transfer function
-                # 0.0 -> 0 opacity
-                # t   -> 0 opacity
-                # t+  -> o * 0.2
-                # 1.0 -> o * 1.0
                 # We need to map this to data range? PyVista maps automatically to scalar range.
                 # But we need to ensure the "zero" part covers the threshold.
                 # Actually, easier to use 'sigmoid' and shift the contrast? 
