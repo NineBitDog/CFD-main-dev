@@ -6,13 +6,13 @@ void main_setup() { // Custom; required extensions in defines.hpp: FP16S, EQUILI
     const float lbm_Re = 10000000.0f;
     const float lbm_u = 0.075f;
     const ulong lbm_T = 108000ull;
-    LBM lbm(lbm_N, 1u, 1u, 1u, units.nu_from_Re(lbm_Re, (float)lbm_N.x, lbm_u)); // run on 1x1x1 = 1 GPU
+    LBM lbm(lbm_N, 2u, 2u, 2u, units.nu_from_Re(lbm_Re, (float)lbm_N.x, lbm_u)); // run on 1x1x1 = 1 GPU
     // ###################################################################################### define geometry ######################################################################################
     const float size = 1.0f*lbm.size().z;
     const float3 center = float3(lbm.center().x + 0.0f*lbm.size().x, lbm.center().y + 0.0f*lbm.size().y, lbm.center().z + 0.0f*lbm.size().z);
     const float3x3 rotation = float3x3(float3(1, 0, 0), radians(0.0f))*float3x3(float3(0, 1, 0), radians(0.0f))*float3x3(float3(0, 0, 1), radians(270.0f));
     Clock clock;
-    lbm.voxelize_stl(get_exe_path()+"../stl/sim_geometry_1787169134.stl", center, rotation, size);
+    lbm.voxelize_stl(get_exe_path()+"../stl/sim_geometry_1787169888.stl", center, rotation, size);
     println(print_time(clock.stop()));
     const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
         if(lbm.flags[n]!=TYPE_S) lbm.u.x[n] = lbm_u;

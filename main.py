@@ -150,7 +150,7 @@ void main_setup() {{ // Custom; required extensions in defines.hpp: FP16S, EQUIL
     const float lbm_Re = {re}f;
     const float lbm_u = 0.075f;
     const ulong lbm_T = 108000ull;
-    LBM lbm(lbm_N, 2u, 2u, 2u, units.nu_from_Re(lbm_Re, (float)lbm_N.x, lbm_u)); // run on 1x1x1 = 1 GPU
+    LBM lbm(lbm_N, 1u, 1u, 1u, units.nu_from_Re(lbm_Re, (float)lbm_N.x, lbm_u)); // run on 1x1x1 = 1 GPU
     // ###################################################################################### define geometry ######################################################################################
     const float size = {scale}f*lbm.size().z;
     const float3 center = float3(lbm.center().x + {off_x}f*lbm.size().x, lbm.center().y + {off_y}f*lbm.size().y, lbm.center().z + {off_z}f*lbm.size().z);
