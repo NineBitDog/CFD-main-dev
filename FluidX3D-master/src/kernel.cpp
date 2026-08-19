@@ -1503,7 +1503,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 		const uint xcoord = coordinates(n).x;
 		const bool inlet_side = xcoord <= 1u;
 		if(inlet_side) {
-			float ramp = clamp((float)t/(float)50000ul, 0.0f, 1.0f);
+			float ramp = clamp((float)t/(float)1000ul, 0.0f, 1.0f);
 			// Smoothstep startup avoids an impulse into the car at t=0.
 			ramp = ramp*ramp*(3.0f-2.0f*ramp);
 			uxn = 0.075f*ramp;
