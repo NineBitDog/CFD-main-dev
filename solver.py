@@ -19,10 +19,10 @@ except Exception as e:
 # --- WARP KERNEL (Run on GPU) ---
 @wp.kernel
 def trace_grid_streamlines(
-    points: wp.array2d(dtype=wp.vec3),          # [NumLines, MaxSteps]
-    colors: wp.array2d(dtype=wp.vec4),          # [NumLines, MaxSteps]
-    velocity_field: wp.array4d(dtype=wp.vec3),  # [Nx, Ny, Nz, 3]
-    vehicle_surface: wp.array3d(dtype=wp.uint8),# [Nx, Ny, Nz]
+    points: wp.array2d(dtype=wp.vec3),
+    colors: wp.array2d(dtype=wp.vec4),
+    velocity_field: wp.array4d(dtype=wp.vec3),
+    vehicle_surface: wp.array3d(dtype=wp.uint8),
     grid_res: int,
     dt: float,
     max_steps: int,
@@ -32,10 +32,7 @@ def trace_grid_streamlines(
 ):
     idx = wp.tid()
 
-    # 1. Initialize Particle (Reset to Emitter)
     state = wp.rand_init(1234, idx)
-
-    # Random offset in a disk perpendicular to Z (assuming flow is roughly Z)
     rx = wp.randf(state) * 2.0 - 1.0
     ry = wp.randf(state) * 2.0 - 1.0
 
@@ -43,11 +40,8 @@ def trace_grid_streamlines(
     p = start_pos
     touched_vehicle = False
 
-    # 2. Trace Loop
     for i in range(max_steps):
         points[idx, i] = p
-
-        # Default color. Alpha is changed below after the complete line is traced.
         colors[idx, i] = wp.vec4(0.0, 0.8, 1.0, 0.0)
 
         ix = int(p[0])
@@ -62,33 +56,30 @@ def trace_grid_streamlines(
 
             v = velocity_field[ix, iy, iz]
 
-            # Check whether this streamline has reached the vehicle surface.
-            # A small radius avoids losing lines because of sub-voxel positioning.
+            # A streamline qualifies when any traced point comes within
+            # contact_radius lattice cells of the vehicle surface.
             for dz in range(-contact_radius, contact_radius + 1):
                 for dy in range(-contact_radius, contact_radius + 1):
                     for dx in range(-contact_radius, contact_radius + 1):
                         nx = ix + dx
                         ny = iy + dy
                         nz = iz + dz
-
                         if (nx >= 0 and nx < grid_res and
                             ny >= 0 and ny < grid_res and
                             nz >= 0 and nz < grid_res):
                             if vehicle_surface[nx, ny, nz] != 0:
                                 touched_vehicle = True
 
-            # Speed coloring
             speed = wp.length(v)
             if speed > 0.05:
                 colors[idx, i] = wp.vec4(1.0, 0.3, 0.0, 1.0)
             else:
                 colors[idx, i] = wp.vec4(0.0, 0.5, 1.0, 1.0)
 
-        # Advect
         p = p + v * dt
 
-    # 3. Only display a streamline if ANY point on it contacted the vehicle.
-    # This keeps the complete streamline visible once it qualifies.
+    # Show the complete line only if it contacted the vehicle somewhere.
+    # Otherwise alpha=0 hides the line in VisPy.
     for i in range(max_steps):
         c = colors[idx, i]
         if touched_vehicle:
@@ -105,9 +96,7 @@ class FluidX3DSolver:
         self.resolution = resolution
         self.cells = resolution**3
 
-        # Streamline contact distance in lattice cells.
-        # 2 cells is enough to catch lines that pass very close to the surface
-        # without making the entire near-car flow region visible.
+        # Distance in lattice cells at which a streamline qualifies.
         self.streamline_contact_radius = 2
 
         # --- 1. Load C++ DLL ---
@@ -131,15 +120,23 @@ class FluidX3DSolver:
         self.sim_scale_factor = (resolution * 0.9) / mesh_max_dim
         self.grid_center = resolution / 2.0
 
-        # --- 4. Build a surface voxel mask for streamline filtering ---
-        # This is only done once. It uses the same centered/scaled coordinate
-        # convention used by the streamline world/grid conversion.
+        # --- 4. CPU staging buffers ---
+        self.vx = np.zeros(self.cells, dtype=np.float32)
+        self.vy = np.zeros(self.cells, dtype=np.float32)
+        self.vz = np.zeros(self.cells, dtype=np.float32)
+        self.cpu_staging_grid = np.zeros(
+            (self.resolution, self.resolution, self.resolution, 3),
+            dtype=np.float32,
+            order='F'
+        )
+
+        # --- 5. Build a surface voxel mask for streamline filtering ---
         self.vehicle_surface_cpu = np.zeros(
             (resolution, resolution, resolution), dtype=np.uint8, order='C'
         )
-        self._build_vehicle_surface_mask(stl_path, mesh_max_dim)
+        self._build_vehicle_surface_mask(stl_path)
 
-        # Warp GPU Buffers
+        # --- 6. Warp GPU Buffers ---
         self.device = WP_DEVICE
         self.wp_field = wp.zeros(
             (resolution, resolution, resolution, 3),
@@ -165,27 +162,26 @@ class FluidX3DSolver:
             device=self.device
         )
 
-    def _build_vehicle_surface_mask(self, stl_path, mesh_max_dim):
+    def _build_vehicle_surface_mask(self, stl_path):
         """Voxelize the STL surface into the streamline grid once."""
         try:
             mesh = trimesh.load(stl_path, force='mesh')
             if mesh is None or len(mesh.vertices) == 0:
                 raise RuntimeError("STL contains no vertices")
 
-            # Match the solver's grid-space convention:
-            # center the mesh, scale its largest dimension to resolution*0.9,
-            # and place its center at the middle of the grid.
             bounds_min = mesh.bounds[0]
             bounds_max = mesh.bounds[1]
             mesh_center = (bounds_min + bounds_max) * 0.5
 
+            # Match the solver's grid-space convention: center the STL and
+            # scale its largest dimension to resolution*0.9.
             mesh.vertices = (
                 (mesh.vertices - mesh_center) * self.sim_scale_factor
                 + self.grid_center
             )
 
-            # Surface-only voxelization is intentional: we only need to know
-            # whether a streamline comes near the vehicle surface.
+            # Surface-only voxelization is intentional. We only need the
+            # vehicle boundary for streamline proximity testing.
             vox = mesh.voxelized(pitch=1.0, method='subdivide')
             points = np.asarray(vox.points)
 
@@ -198,6 +194,9 @@ class FluidX3DSolver:
             )
             indices = indices[valid]
 
+            if len(indices) == 0:
+                raise RuntimeError("Vehicle surface is outside the streamline grid")
+
             self.vehicle_surface_cpu[
                 indices[:, 0], indices[:, 1], indices[:, 2]
             ] = 1
@@ -208,8 +207,8 @@ class FluidX3DSolver:
             )
 
         except Exception as e:
-            # Fail safely: an empty mask means the existing streamlines remain
-            # hidden rather than accidentally displaying the entire field.
+            # Fail safely: an empty mask hides all streamlines rather than
+            # accidentally displaying the entire field.
             print(f"⚠️ Could not build vehicle streamline mask: {e}")
 
     def update(self):
