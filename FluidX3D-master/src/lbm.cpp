@@ -396,9 +396,10 @@ void LBM_Domain::voxelize_mesh_on_device(
       }
     }
   }
-  // Directional 2-D uniform triangle grid. Only the two coordinates
-  // perpendicular to the ray direction are indexed. Triangle AABBs are
-  // expanded by half a voxel so thin surfaces are retained locally.
+  // Directional 2-D uniform triangle grid.
+  // Only the two coordinates perpendicular to the ray direction are indexed.
+  // Triangle AABBs are expanded by half a voxel so thin surfaces are retained locally.
+
   const uint triangle_number = mesh->triangle_number;
 
   const float grid_min0 =
@@ -422,29 +423,33 @@ void LBM_Domain::voxelize_mesh_on_device(
                         mesh->pmax.y;
 
   const float span0 = fmaxf(
-      grid_max0-grid_min0,
+      grid_max0 - grid_min0,
       1.0e-3f
   );
 
   const float span1 = fmaxf(
-      grid_max1-grid_min1,
+      grid_max1 - grid_min1,
       1.0e-3f
   );
 
-  const uint target_cells =
-      max(
-          64u,
-          min(
-              16384u,
-              (triangle_number+7u)/8u
-          )
-      );
+  // Target approximately 8 triangles per spatial cell.
+  // Avoid max()/min() here because FluidX3D's custom integer
+  // overloads can become ambiguous with MSVC.
 
-  float grid_cell =
-      sqrt(
-          (span0*span1) /
-          (float)target_cells
-      );
+  const uint triangle_groups =
+      (triangle_number + 7u) / 8u;
+
+  const uint target_cells =
+      triangle_groups < 64u ?
+          64u :
+      triangle_groups > 16384u ?
+          16384u :
+          triangle_groups;
+
+  float grid_cell = sqrt(
+      (span0 * span1) /
+      (float)target_cells
+  );
 
   grid_cell = fmaxf(
       grid_cell,
@@ -452,28 +457,29 @@ void LBM_Domain::voxelize_mesh_on_device(
   );
 
   uint grid_n0 =
-      max(
-          1u,
-          (uint)ceil(span0/grid_cell)
+      (uint)ceil(
+          span0 / grid_cell
       );
 
   uint grid_n1 =
-      max(
-          1u,
-          (uint)ceil(span1/grid_cell)
+      (uint)ceil(
+          span1 / grid_cell
       );
 
-  grid_n0 = min(grid_n0,256u);
-  grid_n1 = min(grid_n1,256u);
+  if(grid_n0 < 1u) grid_n0 = 1u;
+  if(grid_n1 < 1u) grid_n1 = 1u;
+
+  if(grid_n0 > 256u) grid_n0 = 256u;
+  if(grid_n1 > 256u) grid_n1 = 256u;
 
   const float grid_cell0 =
-      span0/(float)grid_n0;
+      span0 / (float)grid_n0;
 
   const float grid_cell1 =
-      span1/(float)grid_n1;
+      span1 / (float)grid_n1;
 
   const uint grid_cells =
-      grid_n0*grid_n1;
+      grid_n0 * grid_n1;
 
   vector<uint> grid_counts(
       grid_cells,
@@ -485,105 +491,104 @@ void LBM_Domain::voxelize_mesh_on_device(
   vector<uint> tri_h0(triangle_number);
   vector<uint> tri_h1(triangle_number);
 
-  for(uint i=0u;i<triangle_number;i++) {
+  for(uint i=0u; i<triangle_number; i++) {
 
-      const float3 a=mesh->p0[i];
-      const float3 b=mesh->p1[i];
-      const float3 c=mesh->p2[i];
+      const float3 a = mesh->p0[i];
+      const float3 b = mesh->p1[i];
+      const float3 c = mesh->p2[i];
 
       const float a0 =
-          direction==0u ?
-              fminf(a.y,fminf(b.y,c.y)) :
-          direction==1u ?
-              fminf(a.x,fminf(b.x,c.x)) :
-              fminf(a.x,fminf(b.x,c.x));
+          direction == 0u ?
+              fminf(a.y, fminf(b.y, c.y)) :
+          direction == 1u ?
+              fminf(a.x, fminf(b.x, c.x)) :
+              fminf(a.x, fminf(b.x, c.x));
 
       const float a1 =
-          direction==0u ?
-              fminf(a.z,fminf(b.z,c.z)) :
-          direction==1u ?
-              fminf(a.z,fminf(b.z,c.z)) :
-              fminf(a.y,fminf(b.y,c.y));
+          direction == 0u ?
+              fminf(a.z, fminf(b.z, c.z)) :
+          direction == 1u ?
+              fminf(a.z, fminf(b.z, c.z)) :
+              fminf(a.y, fminf(b.y, c.y));
 
       const float b0 =
-          direction==0u ?
-              fmaxf(a.y,fmaxf(b.y,c.y)) :
-          direction==1u ?
-              fmaxf(a.x,fmaxf(b.x,c.x)) :
-              fmaxf(a.x,fmaxf(b.x,c.x));
+          direction == 0u ?
+              fmaxf(a.y, fmaxf(b.y, c.y)) :
+          direction == 1u ?
+              fmaxf(a.x, fmaxf(b.x, c.x)) :
+              fmaxf(a.x, fmaxf(b.x, c.x));
 
       const float b1 =
-          direction==0u ?
-              fmaxf(a.z,fmaxf(b.z,c.z)) :
-          direction==1u ?
-              fmaxf(a.z,fmaxf(b.z,c.z)) :
-              fmaxf(a.y,fmaxf(b.y,c.y));
+          direction == 0u ?
+              fmaxf(a.z, fmaxf(b.z, c.z)) :
+          direction == 1u ?
+              fmaxf(a.z, fmaxf(b.z, c.z)) :
+              fmaxf(a.y, fmaxf(b.y, c.y));
 
-      tri_g0[i]=(uint)clamp(
-          (int)floor(
-              (a0-0.5f-grid_min0) /
-              grid_cell0
-          ),
-          0,
-          (int)grid_n0-1
+      int g0 = (int)floor(
+          (a0 - 0.5f - grid_min0) /
+          grid_cell0
       );
 
-      tri_g1[i]=(uint)clamp(
-          (int)floor(
-              (a1-0.5f-grid_min1) /
-              grid_cell1
-          ),
-          0,
-          (int)grid_n1-1
+      int g1 = (int)floor(
+          (a1 - 0.5f - grid_min1) /
+          grid_cell1
       );
 
-      tri_h0[i]=(uint)clamp(
-          (int)floor(
-              (b0+0.5f-grid_min0) /
-              grid_cell0
-          ),
-          0,
-          (int)grid_n0-1
+      int h0 = (int)floor(
+          (b0 + 0.5f - grid_min0) /
+          grid_cell0
       );
 
-      tri_h1[i]=(uint)clamp(
-          (int)floor(
-              (b1+0.5f-grid_min1) /
-              grid_cell1
-          ),
-          0,
-          (int)grid_n1-1
+      int h1 = (int)floor(
+          (b1 + 0.5f - grid_min1) /
+          grid_cell1
       );
+
+      if(g0 < 0) g0 = 0;
+      if(g1 < 0) g1 = 0;
+      if(h0 < 0) h0 = 0;
+      if(h1 < 0) h1 = 0;
+
+      if(g0 >= (int)grid_n0) g0 = (int)grid_n0 - 1;
+      if(g1 >= (int)grid_n1) g1 = (int)grid_n1 - 1;
+      if(h0 >= (int)grid_n0) h0 = (int)grid_n0 - 1;
+      if(h1 >= (int)grid_n1) h1 = (int)grid_n1 - 1;
+
+      tri_g0[i] = (uint)g0;
+      tri_g1[i] = (uint)g1;
+      tri_h0[i] = (uint)h0;
+      tri_h1[i] = (uint)h1;
 
       for(
-          uint gy=tri_g1[i];
-          gy<=tri_h1[i];
+          uint gy = tri_g1[i];
+          gy <= tri_h1[i];
           gy++
       ) {
           for(
-              uint gx=tri_g0[i];
-              gx<=tri_h0[i];
+              uint gx = tri_g0[i];
+              gx <= tri_h0[i];
               gx++
           ) {
               grid_counts[
-                  gx+gy*grid_n0
+                  gx + gy * grid_n0
               ]++;
           }
       }
   }
 
   vector<uint> grid_offsets(
-      grid_cells+1u,
+      grid_cells + 1u,
       0u
   );
 
   for(
-      uint c=0u;
-      c<grid_cells;
+      uint c = 0u;
+      c < grid_cells;
       c++
   ) {
-      grid_offsets[c+1u] =
-          grid_offsets[c]+
+      grid_offsets[c + 1u] =
+          grid_offsets[c] +
           grid_counts[c];
   }
 
@@ -595,25 +600,25 @@ void LBM_Domain::voxelize_mesh_on_device(
       grid_offsets;
 
   for(
-      uint i=0u;
-      i<triangle_number;
+      uint i = 0u;
+      i < triangle_number;
       i++
   ) {
       for(
-          uint gy=tri_g1[i];
-          gy<=tri_h1[i];
+          uint gy = tri_g1[i];
+          gy <= tri_h1[i];
           gy++
       ) {
           for(
-              uint gx=tri_g0[i];
-              gx<=tri_h0[i];
+              uint gx = tri_g0[i];
+              gx <= tri_h0[i];
               gx++
           ) {
               grid_triangles[
                   grid_cursor[
-                      gx+gy*grid_n0
+                      gx + gy * grid_n0
                   ]++
-              ]=i;
+              ] = i;
           }
       }
   }
@@ -631,33 +636,53 @@ void LBM_Domain::voxelize_mesh_on_device(
       1u,
       grid_triangles.data()
   );
-  const ulong A[3] = {(ulong)Ny * (ulong)Nz, (ulong)Nz * (ulong)Nx,
-                      (ulong)Nx * (ulong)Ny};
-  Kernel kernel_voxelize_mesh(device, A[direction], "voxelize_mesh", direction,
-                              fi, u, flags, t + 1ull, flag, p0, p1, p2,
-                              bounding_box_and_velocity, grid_offsets_device,
-                              grid_triangles_device, grid_n0, grid_n1,
-                              grid_min0, grid_min1, grid_cell0, grid_cell1);
-#ifdef SURFACE
-  kernel_voxelize_mesh.add_parameters(mass, massex);
-#endif // SURFACE
+
+  const ulong A[3] = {
+      (ulong)Ny * (ulong)Nz,
+      (ulong)Nz * (ulong)Nx,
+      (ulong)Nx * (ulong)Ny
+  };
+
+  Kernel kernel_voxelize_mesh(
+      device,
+      A[direction],
+      "voxelize_mesh",
+      direction,
+      fi,
+      u,
+      flags,
+      t + 1ull,
+      flag,
+      p0,
+      p1,
+      p2,
+      bounding_box_and_velocity,
+      grid_offsets_device,
+      grid_triangles_device,
+      grid_n0,
+      grid_n1,
+      grid_min0,
+      grid_min1,
+      grid_cell0,
+      grid_cell1
+  );
+
+  #ifdef SURFACE
+  kernel_voxelize_mesh.add_parameters(
+      mass,
+      massex
+  );
+  #endif // SURFACE
+
   p0.write_to_device();
   p1.write_to_device();
   p2.write_to_device();
   bounding_box_and_velocity.write_to_device();
+
   grid_offsets_device.write_to_device();
   grid_triangles_device.write_to_device();
+
   kernel_voxelize_mesh.run();
-}
-void LBM_Domain::enqueue_unvoxelize_mesh_on_device(
-    const Mesh *mesh,
-    const uchar flag) { // remove voxelized triangle mesh from LBM grid
-  const float x0 = mesh->pmin.x, y0 = mesh->pmin.y, z0 = mesh->pmin.z,
-              x1 = mesh->pmax.x, y1 = mesh->pmax.y,
-              z1 = mesh->pmax.z; // remove all flags in bounding box of mesh
-  Kernel kernel_unvoxelize_mesh(device, get_N(), "unvoxelize_mesh", flags, flag,
-                                x0, y0, z0, x1, y1, z1);
-  kernel_unvoxelize_mesh.run();
 }
 
 string LBM_Domain::device_defines() const {
