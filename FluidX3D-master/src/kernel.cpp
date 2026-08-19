@@ -3595,7 +3595,6 @@ string opencl_c_container() { return R( // ########################## begin of O
 
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
-		uint disturbed_run=0u;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
 			// Do not wrap across a domain face. A reflected boundary cell must terminate
 			// the trajectory rather than re-entering from the opposite side.
@@ -3612,10 +3611,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 			const float speed_disturbance=fabs(ul-freestream_speed)/fmax(freestream_speed,1.0e-6f);
 			const float direction_disturbance=1.0f-dot(un/fmax(ul,1.0e-6f),freestream_dir);
 			const bool point_disturbed=speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold;
-			if(point_disturbed) disturbed_run++; else disturbed_run=0u;
-			// Require a short continuous region of disturbed flow so one reflected
-			// boundary cell cannot make the whole streamline qualify.
-			if(disturbed_run>=3u) { affected=true; break; }
+			if(point_disturbed) { affected=true; break; }
 			p1+=(dt/ul)*un;
 			if(def_scale_u*ul<0.1f) break;
 		}
