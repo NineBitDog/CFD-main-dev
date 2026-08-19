@@ -3565,19 +3565,43 @@ string opencl_c_container() { return R( // ########################## begin of O
 	float camera_cache[15]; // cache camera parameters in case the kernel draws more than one shape
 	for(uint i=0u; i<15u; i++) camera_cache[i] = camera[i];
 	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
-	//draw_circle(p, 0.5f*def_streamline_sparse, 0xFFFFFF, camera_cache, bitmap, zbuffer);
-	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) { // integrate forward and backward in time
+	// A streamline is rendered only if its trajectory actually reaches a
+	// vehicle cell (TYPE_S). We trace once to test contact before drawing,
+	// because drawing during the test would leave behind rejected lines.
+	bool hit_vehicle = false;
+	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
+		float3 p1=p;
+		for(uint l=0u; l<def_streamline_length/2u; l++) {
+			const uint x = (uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
+			const uint y = (uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
+			const uint z = (uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
+			const uxx n = (uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
+			if(flags[n]&TYPE_S) { hit_vehicle=true; break; }
+			if(flags[n]&(TYPE_E|TYPE_I|TYPE_G)) break;
+			const float3 un = load3(n, u); // interpolate_u(p1, u)
+			const float ul = length(un);
+			if(ul==0.0f) break;
+			p1 += (dt/ul)*un;
+			if(def_scale_u*ul<0.1f||p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
+		}
+	}
+	if(!hit_vehicle) return;
+
+	// Contact confirmed: trace again and render the complete streamline in
+	// both directions. Lines that never reach TYPE_S never draw any pixels.
+	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
 		float3 p0, p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
 			const uint x = (uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
 			const uint y = (uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
 			const uint z = (uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
 			const uxx n = (uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
-			if(flags[n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) return;
+			if(flags[n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
 			const float3 un = load3(n, u); // interpolate_u(p1, u)
 			const float ul = length(un);
+			if(ul==0.0f) break;
 			p0 = p1;
-			p1 += (dt/ul)*un; // integrate forward in time
+			p1 += (dt/ul)*un;
 			if(def_scale_u*ul<0.1f||p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
 			int c = 0; // coloring
 			switch(field_mode) {
