@@ -63,7 +63,7 @@ if fs >= 0:
         fblock = s[fs:fe]
         fblock = re.sub(r'\n\s*// STREAMLINE_VELOCITY_FILTER_BEGIN.*?// STREAMLINE_VELOCITY_FILTER_END\n', '\n', fblock, flags=re.S)
         filter_code = '''\n\t// STREAMLINE_VELOCITY_FILTER_BEGIN\n\t{\n\t\tconst float vf_speed = length(load3(n,u));\n\t\tconst float vf_ref_speed = 0.075f;\n\t\tconst float3 vf_ref_dir = (float3)(1.0f,0.0f,0.0f);\n\t\tconst float vf_speed_disturbance = fabs(vf_speed-vf_ref_speed)/fmax(vf_ref_speed,1.0e-6f);\n\t\tconst float3 vf_dir = load3(n,u)/fmax(vf_speed,1.0e-6f);\n\t\tconst float vf_direction_disturbance = 1.0f-dot(vf_dir,vf_ref_dir);\n\t\tif(vf_speed<=1.0e-6f || (vf_speed_disturbance<0.03f && vf_direction_disturbance<0.02f)) continue;\n\t}\n\t// STREAMLINE_VELOCITY_FILTER_END\n'''
-        m = re.search(r'(\n\s*)(?:const\s+)?[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[^;]*\bn\b[^;]*;)', fblock)
+        m = re.search(r'(\n\s*)(?:const\s+)?[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[^;]*\bn\b[^;]*;', fblock)
         if m and 'STREAMLINE_VELOCITY_FILTER_BEGIN' not in fblock:
             pos = m.start(1)
             fblock = fblock[:pos] + filter_code + fblock[pos:]
