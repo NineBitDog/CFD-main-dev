@@ -3397,13 +3397,20 @@ string opencl_c_container() { return R( // ########################## begin of O
 				if(xyz.x<0 || xyz.y<0 || xyz.z<0 || xyz.x>=(int)Nx || xyz.y>=(int)Ny || xyz.z>=(int)Nz) break; // out of simulation box
 				const uxx n = index((uint3)((uint)clamp(xyz.x, 0, (int)Nx-1), (uint)clamp(xyz.y, 0, (int)Ny-1), (uint)clamp(xyz.z, 0, (int)Nz-1)));
 				if(!(flags[n]&(TYPE_S|TYPE_E|TYPE_G))) {
-					const float un = length(load3(n, u));
-					const float weight = fmin(un, fabs(un-0.5f/def_scale_u));
-					sum = fma(weight, un, sum);
-					traversed_cells_weighted += weight;
+					const float3 vel = load3(n, u);
+					const float speed = length(vel);
+					const float speed_disturbance = fabs(speed-GRAPHICS_STREAMLINE_U_INF)/fmax(GRAPHICS_STREAMLINE_U_INF, 1.0e-6f);
+					const float3 flow_dir = vel/fmax(speed, 1.0e-6f);
+					const float direction_disturbance = 1.0f-dot(flow_dir, (float3)(1.0f, 0.0f, 0.0f));
+					if(speed_disturbance>=GRAPHICS_STREAMLINE_SPEED_THRESHOLD || direction_disturbance>=GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD) {
+						const float weight = fmin(speed, fabs(speed-0.5f/def_scale_u));
+						sum = fma(weight, speed, sum);
+						traversed_cells_weighted += weight;
+					}
 				}
 				traversed_cells++;
 			}
+			if(traversed_cells_weighted<=0.0f) return background_color;
 			color = colorscale_rainbow(def_scale_u*sum/traversed_cells_weighted);
 			traversed_cells_weighted *= 2.0f*def_scale_u;
 			break;
@@ -3565,77 +3572,68 @@ string opencl_c_container() { return R( // ########################## begin of O
 	float camera_cache[15]; // cache camera parameters in case the kernel draws more than one shape
 	for(uint i=0u; i<15u; i++) camera_cache[i] = camera[i];
 	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
-	// A streamline is rendered only if its trajectory actually reaches a
-	// vehicle cell (TYPE_S). We trace once to test contact before drawing,
-	// because drawing during the test would leave behind rejected lines.
-	// A streamline is rendered only if its trajectory comes within 4 lattice
-	// cells of a vehicle surface voxel (TYPE_S). Test first, then render, so
-	// rejected streamlines never draw any pixels.
-	bool hit_vehicle = false;
-	const int contact_radius = 4;
-	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
+	// First pass: classify the streamline from the velocity field only.
+	// Freestream is +X for this vehicle setup. A line is affected if any
+	// point has a speed disturbance or direction change above threshold.
+	bool affected = false;
+	const float U_inf = GRAPHICS_STREAMLINE_U_INF;
+	const float speed_threshold = GRAPHICS_STREAMLINE_SPEED_THRESHOLD;
+	const float direction_threshold = GRAPHICS_STREAMLINE_DIRECTION_THRESHOLD;
+	const float3 freestream_dir = (float3)(1.0f, 0.0f, 0.0f);
+
+	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			const int x = (int)(p1.x+1.5f*(float)def_Nx)%(int)def_Nx;
-			const int y = (int)(p1.y+1.5f*(float)def_Ny)%(int)def_Ny;
-			const int z = (int)(p1.z+1.5f*(float)def_Nz)%(int)def_Nz;
-			const uxx n = (uxx)x+(uxx)(y+z*(int)def_Ny)*(uxx)def_Nx;
+			const uint x=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
+			const uint y=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
+			const uint z=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
+			const uxx n=(uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
+			if(flags[n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
 
-			// Search a 4-voxel neighborhood around the streamline point.
-			// This makes the contact distance independent of the exact voxel
-			// centerline of the streamline.
-			for(int dz=-contact_radius; dz<=contact_radius && !hit_vehicle; dz++) {
-				for(int dy=-contact_radius; dy<=contact_radius && !hit_vehicle; dy++) {
-					for(int dx=-contact_radius; dx<=contact_radius; dx++) {
-						if(dx*dx+dy*dy+dz*dz > contact_radius*contact_radius) continue;
-						const int xx=x+dx, yy=y+dy, zz=z+dz;
-						if(xx<0 || xx>=(int)def_Nx || yy<0 || yy>=(int)def_Ny || zz<0 || zz>=(int)def_Nz) continue;
-						const uxx nn=(uxx)xx+(uxx)(yy+zz*(int)def_Ny)*(uxx)def_Nx;
-						if(flags[nn]&TYPE_S) { hit_vehicle=true; break; }
-					}
-				}
+			const float3 un=load3(n,u);
+			const float ul=length(un);
+			if(ul<=0.0f) break;
+
+			const float speed_disturbance=fabs(ul-U_inf)/fmax(U_inf,1.0e-6f);
+			const float3 flow_dir=un/fmax(ul,1.0e-6f);
+			const float direction_disturbance=1.0f-dot(flow_dir,freestream_dir);
+			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) {
+				affected=true;
+				break;
 			}
-			if(hit_vehicle) break;
-			if(flags[n]&(TYPE_E|TYPE_I|TYPE_G)) break;
-			const float3 un = load3(n, u); // interpolate_u(p1, u)
-			const float ul = length(un);
-			if(ul==0.0f) break;
-			p1 += (dt/ul)*un;
-			if(def_scale_u*ul<0.1f||p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
+
+			p1+=(dt/ul)*un;
+			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 		}
 	}
-	if(!hit_vehicle) return;
+	if(!affected) return;
 
-	if(!hit_vehicle) return;
-
-	// Contact confirmed: trace again and render the complete streamline in
-	// both directions. Lines that never reach TYPE_S never draw any pixels.
+	// Second pass: render only streamlines classified as affected.
 	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
 		float3 p0, p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
-			const uint x = (uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
-			const uint y = (uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
-			const uint z = (uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
-			const uxx n = (uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
+			const uint x=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
+			const uint y=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
+			const uint z=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
+			const uxx n=(uxx)x+(uxx)(y+z*def_Ny)*(uxx)def_Nx;
 			if(flags[n]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
-			const float3 un = load3(n, u); // interpolate_u(p1, u)
-			const float ul = length(un);
-			if(ul==0.0f) break;
-			p0 = p1;
-			p1 += (dt/ul)*un;
-			if(def_scale_u*ul<0.1f||p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
-			int c = 0; // coloring
+			const float3 un=load3(n,u);
+			const float ul=length(un);
+			if(ul<=0.0f) break;
+			p0=p1;
+			p1+=(dt/ul)*un;
+			if(def_scale_u*ul<0.1f || p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
+			int c=0;
 			switch(field_mode) {
-				case 0: c = colorscale_rainbow(def_scale_u*ul); break; // coloring by velocity
-				case 1: c = colorscale_twocolor(0.5f+def_scale_rho*(rho[n]-1.0f)); break; // coloring by density
+				case 0: c=colorscale_rainbow(def_scale_u*ul); break;
+				case 1: c=colorscale_twocolor(0.5f+def_scale_rho*(rho[n]-1.0f)); break;
 )+"#ifdef TEMPERATURE"+R(
-				case 2: c = colorscale_iron(0.5f+def_scale_T*(T[n]-def_T_avg)); break; // coloring by temperature
-)+"#endif"+R( // TEMPERATURE
+				case 2: c=colorscale_iron(0.5f+def_scale_T*(T[n]-def_T_avg)); break;
+)+"#endif"+R(
 			}
-			draw_line(p0, p1, c, camera_cache, bitmap, zbuffer);
+			draw_line(p0,p1,c,camera_cache,bitmap,zbuffer);
 		}
 	}
-}
 
 )+"#ifndef TEMPERATURE"+R(
 )+R(kernel void graphics_q_field(const global float* camera, global int* bitmap, global int* zbuffer, const int field_mode, const global float* rho, const global float* u, const global uchar* flags) {
