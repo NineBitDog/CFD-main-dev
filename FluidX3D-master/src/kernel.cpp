@@ -3591,7 +3591,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 	for(uint i=0u; i<15u; i++) camera_cache[i] = camera[i];
 	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
 
-	// First pass: classify the complete trajectory from the actual inlet flow.
+	// First pass: accept a streamline only when its trajectory both
+	// comes close to the vehicle and experiences a real velocity disturbance.
+	bool near_vehicle = false;
 	bool affected = false;
 	const float fallback_U_inf = 0.075f;
 	const float speed_threshold = 0.03f;
@@ -3611,28 +3613,49 @@ string opencl_c_container() { return R( // ########################## begin of O
 	const float freestream_speed=length(freestream);
 	const float3 freestream_dir=freestream/fmax(freestream_speed,1.0e-6f);
 
-	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
+	for(float dt=-1.0f; dt<=1.0f && !(near_vehicle && affected); dt+=2.0f) {
 		float3 p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
 			if(p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
+
 			const uint xx=(uint)(p1.x+1.5f*(float)def_Nx)%def_Nx;
 			const uint yy=(uint)(p1.y+1.5f*(float)def_Ny)%def_Ny;
 			const uint zz=(uint)(p1.z+1.5f*(float)def_Nz)%def_Nz;
 			const uxx nn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
 			if(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G)) break;
+
+			// Cheap radial vehicle proximity test. We sample the 6 axial
+			// directions out to VEHICLE_RADIUS lattice cells. This is enough
+			// to catch nearby trajectories without scanning a large 3-D cube.
+			for(int r=1; r<=VEHICLE_RADIUS && !near_vehicle; r++) {
+				const int dxs[6] = { r, -r, 0, 0, 0, 0 };
+				const int dys[6] = { 0, 0, r, -r, 0, 0 };
+				const int dzs[6] = { 0, 0, 0, 0, r, -r };
+				for(int q=0; q<6; q++) {
+					const int vx=(int)xx+dxs[q];
+					const int vy=(int)yy+dys[q];
+					const int vz=(int)zz+dzs[q];
+					if(vx<0 || vx>=(int)def_Nx || vy<0 || vy>=(int)def_Ny || vz<0 || vz>=(int)def_Nz) continue;
+					const uxx vn=(uxx)vx+(uxx)((uint)vy+(uint)vz*def_Ny)*(uxx)def_Nx;
+					near_vehicle = (flags[vn]&TYPE_S)!=0u;
+					if(near_vehicle) break;
+				}
+			}
+
 			const float3 un=load3(nn,u);
 			const float ul=length(un);
 			if(ul<=1.0e-6f) break;
 			const float speed_disturbance=fabs(ul-freestream_speed)/fmax(freestream_speed,1.0e-6f);
 			const float direction_disturbance=1.0f-dot(un/fmax(ul,1.0e-6f),freestream_dir);
-			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) { affected=true; break; }
+			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) affected=true;
+
 			const float3 next_p1=p1+(dt/ul)*un;
 			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
 			p1=next_p1;
 			if(def_scale_u*ul<0.1f) break;
 		}
 	}
-	if(!affected) return;
+	if(!(near_vehicle && affected)) return;
 
 	// Second pass: only affected trajectories are actually drawn.
 	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
