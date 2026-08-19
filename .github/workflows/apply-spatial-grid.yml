@@ -1,0 +1,38 @@
+name: Apply triangle spatial grid
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !startsWith(github.event.head_commit.message, 'Apply triangle spatial grid patch') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Apply source patch
+        run: python3 tools/apply_triangle_spatial_grid.py
+
+      - name: Remove temporary patcher
+        run: |
+          rm -f tools/apply_triangle_spatial_grid.py .github/workflows/apply-spatial-grid.yml
+
+      - name: Commit patched source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add FluidX3D-master/src/kernel.cpp FluidX3D-master/src/lbm.cpp tools/apply_triangle_spatial_grid.py .github/workflows/apply-spatial-grid.yml
+          if git diff --cached --quiet; then
+            echo "No source changes were necessary."
+            exit 0
+          fi
+          git commit -m "Apply triangle spatial grid patch"
+          git push origin HEAD:dev
