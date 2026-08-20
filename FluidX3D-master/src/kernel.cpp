@@ -3583,9 +3583,13 @@ string opencl_c_container() { return R( // ########################## begin of O
 	const float U_INF=0.075f;
 	const float SPEED_DELTA=0.00225f; // 3% of U_INF
 	const float DIRECTION_DELTA=0.02f;
+	const int VEHICLE_RADIUS=12;
+	const int VEHICLE_RADIUS2=VEHICLE_RADIUS*VEHICLE_RADIUS;
 
 	// FluidX3D-native velocity math is used for both streamline integration and
-	// the impact test. Only segments that are actually disturbed are drawn.
+	// the impact test. A segment must also be inside the 12-voxel vehicle
+	// neighborhood before it can be rendered. This rejects broad freestream and
+	// boundary-reflection disturbances that are nowhere near the vehicle.
 	for(float dt=-1.0f;dt<=1.0f;dt+=2.0f) {
 		float3 p0=p;
 		for(uint l=0u;l<def_streamline_length/2u;l++) {
@@ -3597,8 +3601,28 @@ string opencl_c_container() { return R( // ########################## begin of O
 			const bool impacted=fabs(ul-U_INF)>=SPEED_DELTA || (ul-un.x)>=DIRECTION_DELTA*ul;
 			const float3 p1=p0+(dt*inv_ul)*un;
 			if(p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
-			if(impacted) {
-				const uxx nn=index(closest_coordinates(p0));
+
+			const uint3 q=closest_coordinates(p0);
+			bool near_vehicle=false;
+			for(int dz=-VEHICLE_RADIUS;dz<=VEHICLE_RADIUS&&!near_vehicle;dz++) {
+				const int zz=(int)q.z+dz;
+				if(zz<0||zz>=(int)def_Nz) continue;
+				for(int dy=-VEHICLE_RADIUS;dy<=VEHICLE_RADIUS&&!near_vehicle;dy++) {
+					const int yy=(int)q.y+dy;
+					if(yy<0||yy>=(int)def_Ny) continue;
+					for(int dx=-VEHICLE_RADIUS;dx<=VEHICLE_RADIUS;dx++) {
+						const int dist2=dx*dx+dy*dy+dz*dz;
+						if(dist2>VEHICLE_RADIUS2) continue;
+						const int xx=(int)q.x+dx;
+						if(xx<0||xx>=(int)def_Nx) continue;
+						const uxx vn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
+						if((flags[vn]&TYPE_S)!=0u) { near_vehicle=true; break; }
+					}
+				}
+			}
+
+			if(impacted&&near_vehicle) {
+				const uxx nn=index(q);
 				if(!(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))) {
 					int c=0;
 					switch(field_mode) {
