@@ -21,11 +21,14 @@ jobs:
       - name: Apply streamline filter
         run: python3 tools/apply_streamline_filter.py
 
-      - name: Commit patched kernel
+      - name: Apply latest upstream FluidX3D optimizations
+        run: python3 tools/integrate_upstream_fluidx3d.py
+
+      - name: Commit patched kernel and upstream optimizations
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add FluidX3D-master/src/kernel.cpp tools/apply_streamline_filter.py .github/workflows/apply-streamline-filter.yml
+          git add FluidX3D-master/src/kernel.cpp FluidX3D-master/src/opencl.hpp FluidX3D-master/src/lbm.cpp tools/apply_streamline_filter.py tools/integrate_upstream_fluidx3d.py .github/workflows/apply-streamline-filter.yml
           if git diff --cached --quiet; then
             echo "No source changes were necessary."
             exit 0
