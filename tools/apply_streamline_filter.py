@@ -61,9 +61,13 @@ def patch_kernel() -> bool:
 \tconst float U_INF=0.075f;
 \tconst float SPEED_DELTA=0.00225f; // 3% of U_INF
 \tconst float DIRECTION_DELTA=0.02f;
+\tconst int VEHICLE_RADIUS=12;
+\tconst int VEHICLE_RADIUS2=VEHICLE_RADIUS*VEHICLE_RADIUS;
 
 \t// FluidX3D-native velocity math is used for both streamline integration and
-\t// the impact test. Only segments that are actually disturbed are drawn.
+\t// the impact test. A segment must also be inside the 12-voxel vehicle
+\t// neighborhood before it can be rendered. This rejects broad freestream and
+\t// boundary-reflection disturbances that are nowhere near the vehicle.
 \tfor(float dt=-1.0f;dt<=1.0f;dt+=2.0f) {
 \t\tfloat3 p0=p;
 \t\tfor(uint l=0u;l<def_streamline_length/2u;l++) {
@@ -75,8 +79,28 @@ def patch_kernel() -> bool:
 \t\t\tconst bool impacted=fabs(ul-U_INF)>=SPEED_DELTA || (ul-un.x)>=DIRECTION_DELTA*ul;
 \t\t\tconst float3 p1=p0+(dt*inv_ul)*un;
 \t\t\tif(p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
-\t\t\tif(impacted) {
-\t\t\t\tconst uxx nn=index(closest_coordinates(p0));
+
+\t\t\tconst uint3 q=closest_coordinates(p0);
+\t\t\tbool near_vehicle=false;
+\t\t\tfor(int dz=-VEHICLE_RADIUS;dz<=VEHICLE_RADIUS&&!near_vehicle;dz++) {
+\t\t\t\tconst int zz=(int)q.z+dz;
+\t\t\t\tif(zz<0||zz>=(int)def_Nz) continue;
+\t\t\t\tfor(int dy=-VEHICLE_RADIUS;dy<=VEHICLE_RADIUS&&!near_vehicle;dy++) {
+\t\t\t\t\tconst int yy=(int)q.y+dy;
+\t\t\t\t\tif(yy<0||yy>=(int)def_Ny) continue;
+\t\t\t\t\tfor(int dx=-VEHICLE_RADIUS;dx<=VEHICLE_RADIUS;dx++) {
+\t\t\t\t\t\tconst int dist2=dx*dx+dy*dy+dz*dz;
+\t\t\t\t\t\tif(dist2>VEHICLE_RADIUS2) continue;
+\t\t\t\t\t\tconst int xx=(int)q.x+dx;
+\t\t\t\t\t\tif(xx<0||xx>=(int)def_Nx) continue;
+\t\t\t\t\t\tconst uxx vn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
+\t\t\t\t\t\tif((flags[vn]&TYPE_S)!=0u) { near_vehicle=true; break; }
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+
+\t\t\tif(impacted&&near_vehicle) {
+\t\t\t\tconst uxx nn=index(q);
 \t\t\t\tif(!(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))) {
 \t\t\t\t\tint c=0;
 \t\t\t\t\tswitch(field_mode) {
@@ -103,7 +127,7 @@ def patch_kernel() -> bool:
 
 def main() -> None:
     patch_kernel()
-    print("Applied native FluidX3D velocity math to custom streamline visualization.")
+    print("Applied native FluidX3D velocity math with 12-voxel vehicle proximity filtering.")
 
 
 if __name__ == "__main__":
