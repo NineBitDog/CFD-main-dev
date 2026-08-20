@@ -3590,7 +3590,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 		float3 p0=p;
 		for(uint l=0u;l<def_streamline_length/2u;l++) {
 			if(p0.x<-hLx||p0.x>hLx||p0.y<-hLy||p0.y>hLy||p0.z<-hLz||p0.z>hLz) break;
-			const float3 un=interpolate_u(u,p0);
+			const float3 un=interpolate_u(p0,u);
 			const float ul=length(un);
 			if(ul<=1.0e-6f) break;
 			const float inv_ul=1.0f/ul;
