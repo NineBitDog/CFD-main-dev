@@ -8,13 +8,11 @@ def patch_kernel() -> bool:
     s = KERNEL.read_text(encoding="utf-8")
     original = s
 
-    # Remove the old inlet startup ramp from the generated kernel.
     old_ramp = '''\tif(flagsn_bo==TYPE_E) {\n\t\trhon = rho[n];\n\t\tconst uint xcoord = coordinates(n).x;\n\t\tconst bool inlet_side = xcoord <= 1u;\n\t\tif(inlet_side) {\n\t\t\tfloat ramp = clamp((float)t/(float)1000ul, 0.0f, 1.0f);\n\t\t\t// Smoothstep startup avoids an impulse into the car at t=0.\n\t\t\tramp = ramp*ramp*(3.0f-2.0f*ramp);\n\t\t\tuxn = 0.075f*ramp;\n\t\t\tuyn = 0.0f;\n\t\t\tuzn = 0.0f;\n\t\t} else {\n\t\t\t// Constant-velocity equilibrium outlet.\n\t\t\tuxn = 0.075f;\n\t\t\tuyn = 0.0f;\n\t\t\tuzn = 0.0f;\n\t\t}\n\t} else {\n'''
     new_ramp = '''\tif(flagsn_bo==TYPE_E) {\n\t\trhon = rho[n];\n\t\tuxn = 0.075f;\n\t\tuyn = 0.0f;\n\t\tuzn = 0.0f;\n\t} else {\n'''
     if old_ramp in s:
         s = s.replace(old_ramp, new_ramp, 1)
 
-    # Never inject a second interpolation helper. Use FluidX3D's native helper.
     helper_start = s.find(")+R(float3 interpolate_u_streamline(")
     if helper_start >= 0:
         helper_end = s.find(")+R(float3 load3(", helper_start)
@@ -32,29 +30,21 @@ def patch_kernel() -> bool:
 
     body = r'''
 \tconst uxx n=get_global_id(0);
-\t// Deterministically render half as many seeds.
 \tif((n&1u)!=0u) return;
 \tconst float3 ps=(float3)((float)slice_x+0.5f-0.5f*(float)def_Nx,(float)slice_y+0.5f-0.5f*(float)def_Ny,(float)slice_z+0.5f-0.5f*(float)def_Nz);
 )+"#ifndef D2Q9"+R(
-\tconst uxx sx=(uxx)(def_Nx/def_streamline_sparse);
-\tconst uxx sy=(uxx)(def_Ny/def_streamline_sparse);
-\tconst uxx sz=(uxx)(def_Nz/def_streamline_sparse);
+\tconst uxx sx=(uxx)(def_Nx/def_streamline_sparse),sy=(uxx)(def_Ny/def_streamline_sparse),sz=(uxx)(def_Nz/def_streamline_sparse);
 \tconst uxx streamlines=sx*sy*sz;
 \tif(n>=streamlines) return;
 \tconst uxx xy=sx*sy;
-\tconst uint z=(uint)(n/xy);
-\tconst uxx rem=n%(xy);
-\tconst uint y=(uint)(rem/sx);
-\tconst uint x=(uint)(rem%sx);
+\tconst uint z=(uint)(n/xy), y=(uint)((n%xy)/sx), x=(uint)(n%sx);
 \tfloat3 p=(float)def_streamline_sparse*((float3)((float)x+0.5f,(float)y+0.5f,(float)z+0.5f))-0.5f*((float3)((float)def_Nx,(float)def_Ny,(float)def_Nz));
 \tconst bool rx=fabs(p.x-ps.x)>0.5f*(float)def_streamline_sparse,ry=fabs(p.y-ps.y)>0.5f*(float)def_streamline_sparse,rz=fabs(p.z-ps.z)>0.5f*(float)def_streamline_sparse;
 )+"#else"+R(
-\tconst uxx sx=(uxx)(def_Nx/def_streamline_sparse);
-\tconst uxx sy=(uxx)(def_Ny/def_streamline_sparse);
+\tconst uxx sx=(uxx)(def_Nx/def_streamline_sparse),sy=(uxx)(def_Ny/def_streamline_sparse);
 \tconst uxx streamlines=sx*sy;
 \tif(n>=streamlines) return;
-\tconst uint y=(uint)(n/sx);
-\tconst uint x=(uint)(n%sx);
+\tconst uint y=(uint)(n/sx),x=(uint)(n%sx);
 \tfloat3 p=(float3)((float)def_streamline_sparse*((float)x+0.5f),(float)def_streamline_sparse*((float)y+0.5f),0.5f)-0.5f*((float3)((float)def_Nx,(float)def_Ny,(float)def_Nz));
 \tconst bool rx=fabs(p.x-ps.x)>0.5f*(float)def_streamline_sparse,ry=fabs(p.y-ps.y)>0.5f*(float)def_streamline_sparse,rz=true;
 )+"#endif"+R(
@@ -69,19 +59,17 @@ def patch_kernel() -> bool:
 \tconst float hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u));
 \tconst float hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
 \tconst float U_INF=0.075f;
-\tconst float SPEED_DELTA=0.00225f; // 3% of U_INF
+\tconst float SPEED_DELTA=0.00225f;
 \tconst float DIRECTION_DOT_MAX=0.98f;
 \tconst int VEHICLE_RADIUS=12;
 \tconst int VEHICLE_RADIUS2=144;
 
-\t// One pass per direction. The cheap velocity test runs first; the expensive
-\t// 12-voxel vehicle scan is only performed when a sample is actually disturbed.
-\t// This removes the previous O(streamline_length * 12^3) work for freestream.
 \tfor(float dt=-1.0f;dt<=1.0f;dt+=2.0f) {
 \t\tfloat3 p0=p;
 \t\tfloat3 pair_start=p0;
 \t\tbool pair_disturbed=false;
 \t\tbool vehicle_affected=false;
+\t\tbool just_activated=false;
 \t\tfor(uint l=0u;l<def_streamline_length/2u;l++) {
 \t\t\tif(p0.x<-hLx||p0.x>hLx||p0.y<-hLy||p0.y>hLy||p0.z<-hLz||p0.z>hLz) break;
 \t\t\tconst float3 un=interpolate_u(p0,u);
@@ -91,6 +79,7 @@ def patch_kernel() -> bool:
 \t\t\tconst float ul=u2*inv_ul;
 \t\t\tconst bool disturbed=fabs(ul-U_INF)>=SPEED_DELTA || un.x*inv_ul<=DIRECTION_DOT_MAX;
 
+\t\t\tjust_activated=false;
 \t\t\tif(!vehicle_affected && disturbed) {
 \t\t\t\tconst uint3 q=closest_coordinates(p0);
 \t\t\t\tbool near_vehicle=(flags[(uxx)q.x+(uxx)(q.y+q.z*def_Ny)*(uxx)def_Nx]&TYPE_S)!=0u;
@@ -109,14 +98,15 @@ def patch_kernel() -> bool:
 \t\t\t\t\t\t}
 \t\t\t\t\t}
 \t\t\t\t}
-\t\t\t\tif(near_vehicle) vehicle_affected=true;
+\t\t\t\tif(near_vehicle){vehicle_affected=true;just_activated=true;}
 \t\t\t}
 
 \t\t\tconst float3 p1=p0+(dt*inv_ul)*un;
 \t\t\tif(p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
 
 \t\t\tif(vehicle_affected) {
-\t\t\t\tif((l&1u)==0u) { pair_start=p0; pair_disturbed=disturbed; }
+\t\t\t\tif(just_activated) { pair_start=p0; pair_disturbed=disturbed; }
+\t\t\t\telse if((l&1u)==0u) { pair_start=p0; pair_disturbed=disturbed; }
 \t\t\t\telse {
 \t\t\t\t\tpair_disturbed=pair_disturbed||disturbed;
 \t\t\t\t\tif(pair_disturbed) {
@@ -124,7 +114,7 @@ def patch_kernel() -> bool:
 \t\t\t\t\t\tconst uxx nn=(uxx)q.x+(uxx)(q.y+q.z*def_Ny)*(uxx)def_Nx;
 \t\t\t\t\t\tif(!(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))) {
 \t\t\t\t\t\t\tconst int c=colorscale_rainbow(def_scale_u*ul);
-\t\t\t\t\t\t\tdraw_line(pair_start,p1,c,camera_cache,zbuffer,bitmap);
+\t\t\t\t\t\t\tdraw_line(pair_start,p1,c,camera_cache,bitmap,zbuffer);
 \t\t\t\t\t\t}
 \t\t\t\t\t}
 \t\t\t\t}
