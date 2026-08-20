@@ -25,10 +25,10 @@ def trace_grid_streamlines(
     vehicle_surface: wp.array3d(dtype=wp.uint8),
     grid_res: int,
     dt: float,
-    max_steps: int,
+    max_pre_hit_steps: int,
+    post_hit_steps: int,
     emit_center: wp.vec3,
-    emit_scale: float,
-    contact_radius: int
+    emit_scale: float
 ):
     idx = wp.tid()
 
@@ -38,12 +38,13 @@ def trace_grid_streamlines(
 
     start_pos = emit_center + wp.vec3(rx, ry, 0.0) * emit_scale * 0.5
     p = start_pos
-    touched_vehicle = False
+    hit = False
+    write_idx = 0
 
-    for i in range(max_steps):
-        points[idx, i] = p
-        colors[idx, i] = wp.vec4(0.0, 0.8, 1.0, 0.0)
-
+    # Keep the output packed from the first vehicle hit onward. This is
+    # important: the renderer must never connect the hidden pre-hit portion
+    # to the first visible point.
+    for i in range(max_pre_hit_steps):
         ix = int(p[0])
         iy = int(p[1])
         iz = int(p[2])
@@ -56,36 +57,32 @@ def trace_grid_streamlines(
 
             v = velocity_field[ix, iy, iz]
 
-            # A streamline qualifies when any traced point comes within
-            # contact_radius lattice cells of the vehicle surface.
-            for dz in range(-contact_radius, contact_radius + 1):
-                for dy in range(-contact_radius, contact_radius + 1):
-                    for dx in range(-contact_radius, contact_radius + 1):
-                        nx = ix + dx
-                        ny = iy + dy
-                        nz = iz + dz
-                        if (nx >= 0 and nx < grid_res and
-                            ny >= 0 and ny < grid_res and
-                            nz >= 0 and nz < grid_res):
-                            if vehicle_surface[nx, ny, nz] != 0:
-                                touched_vehicle = True
+            # The surface mask is already voxelized at lattice resolution.
+            # Use a single lookup instead of the old 5x5x5 neighborhood test
+            # (125 global-memory reads per integration step).
+            if vehicle_surface[ix, iy, iz] != 0:
+                hit = True
 
-            speed = wp.length(v)
-            if speed > 0.05:
-                colors[idx, i] = wp.vec4(1.0, 0.3, 0.0, 1.0)
-            else:
-                colors[idx, i] = wp.vec4(0.0, 0.5, 1.0, 1.0)
+            if hit:
+                points[idx, write_idx] = p
+                speed = wp.length(v)
+                if speed > 0.05:
+                    colors[idx, write_idx] = wp.vec4(1.0, 0.3, 0.0, 1.0)
+                else:
+                    colors[idx, write_idx] = wp.vec4(0.0, 0.5, 1.0, 1.0)
+                write_idx += 1
+
+                # Once the vehicle has been hit, only retain a short
+                # downstream segment. This prevents long useless traces.
+                if write_idx >= post_hit_steps:
+                    break
 
         p = p + v * dt
 
-    # Show the complete line only if it contacted the vehicle somewhere.
-    # Otherwise alpha=0 hides the line in VisPy.
-    for i in range(max_steps):
-        c = colors[idx, i]
-        if touched_vehicle:
-            colors[idx, i] = wp.vec4(c[0], c[1], c[2], 1.0)
-        else:
-            colors[idx, i] = wp.vec4(c[0], c[1], c[2], 0.0)
+    # Clear unused output slots. They remain disconnected/transparent.
+    for i in range(write_idx, post_hit_steps):
+        points[idx, i] = p
+        colors[idx, i] = wp.vec4(0.0, 0.0, 0.0, 0.0)
 
 
 class FluidX3DSolver:
@@ -96,8 +93,15 @@ class FluidX3DSolver:
         self.resolution = resolution
         self.cells = resolution**3
 
-        # Distance in lattice cells at which a streamline qualifies.
-        self.streamline_contact_radius = 2
+        # Streamlines are deliberately sparse. Only lines that actually
+        # contact the vehicle are sent to the renderer.
+        self.num_lines = 600
+
+        # Maximum upstream search distance and visible downstream length.
+        # These are substantially lower than the old 200-step traces.
+        self.pre_hit_steps = 140
+        self.post_hit_steps = 48
+        self.streamline_dt = 1.0
 
         # --- 1. Load C++ DLL ---
         dll_name = "fluid_wrapper.dll"
@@ -149,15 +153,15 @@ class FluidX3DSolver:
             device=self.device
         )
 
-        self.num_lines = 2000
-        self.steps = 200
+        # Output contains only the post-hit portion. Pre-hit positions are
+        # never written as visible geometry.
         self.lines_pos = wp.zeros(
-            (self.num_lines, self.steps),
+            (self.num_lines, self.post_hit_steps),
             dtype=wp.vec3,
             device=self.device
         )
         self.lines_col = wp.zeros(
-            (self.num_lines, self.steps),
+            (self.num_lines, self.post_hit_steps),
             dtype=wp.vec4,
             device=self.device
         )
@@ -180,8 +184,8 @@ class FluidX3DSolver:
                 + self.grid_center
             )
 
-            # Surface-only voxelization is intentional. We only need the
-            # vehicle boundary for streamline proximity testing.
+            # Surface-only voxelization is intentional. The mask is used only
+            # to decide whether a streamline has reached the vehicle.
             vox = mesh.voxelized(pitch=1.0, method='subdivide')
             points = np.asarray(vox.points)
 
@@ -203,7 +207,7 @@ class FluidX3DSolver:
 
             print(
                 f"🚗 Streamline vehicle mask: {len(indices):,} surface voxels "
-                f"(contact radius {self.streamline_contact_radius})"
+                f"(single-cell contact test)"
             )
 
         except Exception as e:
@@ -231,7 +235,7 @@ class FluidX3DSolver:
 
         wp.copy(self.wp_field, self.cpu_staging_grid)
 
-        # D. Trace Streamlines (Warp GPU)
+        # D. Trace sparse hit-only streamlines.
         emit_pos = wp.vec3(self.resolution / 2, self.resolution / 2, 10.0)
 
         wp.launch(
@@ -243,11 +247,11 @@ class FluidX3DSolver:
                 self.wp_field,
                 self.wp_vehicle_surface,
                 self.resolution,
-                1.0,
-                self.steps,
+                self.streamline_dt,
+                self.pre_hit_steps,
+                self.post_hit_steps,
                 emit_pos,
-                self.resolution * 0.5,
-                self.streamline_contact_radius
+                self.resolution * 0.5
             ],
             device=self.device
         )
@@ -260,7 +264,7 @@ class FluidX3DSolver:
         # Transform Grid Space -> World Space for VisPy
         pts_world = (pts_grid - self.grid_center) / self.sim_scale_factor
 
-        return pts_world.reshape(-1, 3), cols, self.num_lines, self.steps
+        return pts_world.reshape(-1, 3), cols, self.num_lines, self.post_hit_steps
 
     def cleanup(self):
         if self.lib:
