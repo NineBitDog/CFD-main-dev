@@ -3555,97 +3555,101 @@ string opencl_c_container() { return R( // ########################## begin of O
 )+"#ifndef TEMPERATURE"+R(
 )+R(kernel void graphics_streamline(const global float* camera, global int* bitmap, global int* zbuffer, const int field_mode, const int slice_mode, const int slice_x, const int slice_y, const int slice_z, const global float* rho, const global float* u, const global uchar* flags) {
 	const uxx n=get_global_id(0);
-	// Deterministically render exactly half the streamline seeds.
+	// Deterministically render half as many seeds.
 	if((n&1u)!=0u) return;
 	const float3 ps=(float3)((float)slice_x+0.5f-0.5f*(float)def_Nx,(float)slice_y+0.5f-0.5f*(float)def_Ny,(float)slice_z+0.5f-0.5f*(float)def_Nz);
 )+"#ifndef D2Q9"+R(
-	const uxx streamline_count=(uxx)(def_Nx/def_streamline_sparse)*(uxx)(def_Ny/def_streamline_sparse)*(uxx)(def_Nz/def_streamline_sparse);
-	if(n>=streamline_count) return;
-	const uint z=(uint)(n/(uxx)((def_Nx/def_streamline_sparse)*(def_Ny/def_streamline_sparse)));
-	const uint yz=(uint)(n%(uxx)((def_Nx/def_streamline_sparse)*(def_Ny/def_streamline_sparse)));
-	const uint y=(uint)(yz/(def_Nx/def_streamline_sparse));
-	const uint x=(uint)(yz%(uxx)(def_Nx/def_streamline_sparse));
+	const uxx sx=(uxx)(def_Nx/def_streamline_sparse);
+	const uxx sy=(uxx)(def_Ny/def_streamline_sparse);
+	const uxx sz=(uxx)(def_Nz/def_streamline_sparse);
+	const uxx streamlines=sx*sy*sz;
+	if(n>=streamlines) return;
+	const uxx xy=sx*sy;
+	const uint z=(uint)(n/xy);
+	const uxx rem=n%(xy);
+	const uint y=(uint)(rem/sx);
+	const uint x=(uint)(rem%sx);
 	float3 p=(float)def_streamline_sparse*((float3)((float)x+0.5f,(float)y+0.5f,(float)z+0.5f))-0.5f*((float3)((float)def_Nx,(float)def_Ny,(float)def_Nz));
 	const bool rx=fabs(p.x-ps.x)>0.5f*(float)def_streamline_sparse,ry=fabs(p.y-ps.y)>0.5f*(float)def_streamline_sparse,rz=fabs(p.z-ps.z)>0.5f*(float)def_streamline_sparse;
-)+"#else"+R( // D2Q9
-	const uxx streamline_count=(uxx)(def_Nx/def_streamline_sparse)*(uxx)(def_Ny/def_streamline_sparse);
-	if(n>=streamline_count) return;
-	const uint y=(uint)(n/(uxx)(def_Nx/def_streamline_sparse));
-	const uint x=(uint)(n%(uxx)(def_Nx/def_streamline_sparse));
+)+"#else"+R(
+	const uxx sx=(uxx)(def_Nx/def_streamline_sparse);
+	const uxx sy=(uxx)(def_Ny/def_streamline_sparse);
+	const uxx streamlines=sx*sy;
+	if(n>=streamlines) return;
+	const uint y=(uint)(n/sx);
+	const uint x=(uint)(n%sx);
 	float3 p=(float3)((float)def_streamline_sparse*((float)x+0.5f),(float)def_streamline_sparse*((float)y+0.5f),0.5f)-0.5f*((float3)((float)def_Nx,(float)def_Ny,(float)def_Nz));
 	const bool rx=fabs(p.x-ps.x)>0.5f*(float)def_streamline_sparse,ry=fabs(p.y-ps.y)>0.5f*(float)def_streamline_sparse,rz=true;
-)+"#endif"+R( // D2Q9
+)+"#endif"+R(
 	if((slice_mode==1&&rx)||(slice_mode==2&&ry)||(slice_mode==3&&rz)||(slice_mode==4&&rx&&rz)||(slice_mode==5&&rx&&ry&&rz)||(slice_mode==6&&ry&&rz)||(slice_mode==7&&rx&&ry)) return;
 	if((slice_mode==1||slice_mode==4||slice_mode==5||slice_mode==7)&&!rx) p.x=ps.x;
 	if((slice_mode==2||slice_mode==5||slice_mode==6||slice_mode==7)&&!ry) p.y=ps.y;
 	if((slice_mode==3||slice_mode==4||slice_mode==5||slice_mode==6)&&!rz) p.z=ps.z;
+
 	float camera_cache[15];
 	for(uint i=0u;i<15u;i++) camera_cache[i]=camera[i];
-	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)),hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)),hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
+	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u));
+	const float hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u));
+	const float hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
 	const float U_INF=0.075f;
-	const float SPEED_THRESHOLD=0.03f;
-	const float DIRECTION_THRESHOLD=0.02f;
+	const float SPEED_DELTA=0.00225f; // 3% of U_INF
+	const float DIRECTION_DOT_MAX=0.98f;
 	const int VEHICLE_RADIUS=12;
-	const int VEHICLE_RADIUS2=VEHICLE_RADIUS*VEHICLE_RADIUS;
+	const int VEHICLE_RADIUS2=144;
 
-	// Pass 1: a streamline is considered vehicle-affected only when it gets
-	// within 12 voxels of an actual TYPE_S vehicle cell. This is the seed filter;
-	// it is intentionally not applied to later wake segments.
-	bool vehicle_affected=false;
-	for(float dt=-1.0f;dt<=1.0f&&!vehicle_affected;dt+=2.0f) {
-		float3 p0=p;
-		for(uint l=0u;l<def_streamline_length/2u;l++) {
-			if(p0.x<-hLx||p0.x>hLx||p0.y<-hLy||p0.y>hLy||p0.z<-hLz||p0.z>hLz) break;
-			const uint3 q=closest_coordinates(p0);
-			bool near_vehicle=false;
-			for(int dz=-VEHICLE_RADIUS;dz<=VEHICLE_RADIUS&&!near_vehicle;dz++) {
-				const int zz=(int)q.z+dz;
-				if(zz<0||zz>=(int)def_Nz) continue;
-				for(int dy=-VEHICLE_RADIUS;dy<=VEHICLE_RADIUS&&!near_vehicle;dy++) {
-					const int yy=(int)q.y+dy;
-					if(yy<0||yy>=(int)def_Ny) continue;
-					for(int dx=-VEHICLE_RADIUS;dx<=VEHICLE_RADIUS;dx++) {
-						if(dx*dx+dy*dy+dz*dz>VEHICLE_RADIUS2) continue;
-						const int xx=(int)q.x+dx;
-						if(xx<0||xx>=(int)def_Nx) continue;
-						const uxx vn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
-						if((flags[vn]&TYPE_S)!=0u){near_vehicle=true;break;}
-					}
-				}
-			}
-			if(near_vehicle){vehicle_affected=true;break;}
-			const float3 un=interpolate_u(p0,u);
-			const float ul=length(un);
-			if(ul<=1.0e-6f) break;
-			const float3 p1=p0+(dt/fmax(ul,1.0e-6f))*un;
-			if(p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
-			p0=p1;
-		}
-	}
-	if(!vehicle_affected) return;
-
-	// Pass 2: render only disturbed segments. Once a seed has interacted with
-	// the vehicle, disturbed downstream segments remain eligible after leaving
-	// the 12-voxel neighborhood, which makes the wake visible.
+	// One pass per direction. The cheap velocity test runs first; the expensive
+	// 12-voxel vehicle scan is only performed when a sample is actually disturbed.
+	// This removes the previous O(streamline_length * 12^3) work for freestream.
 	for(float dt=-1.0f;dt<=1.0f;dt+=2.0f) {
 		float3 p0=p;
+		float3 pair_start=p0;
+		bool pair_disturbed=false;
+		bool vehicle_affected=false;
 		for(uint l=0u;l<def_streamline_length/2u;l++) {
 			if(p0.x<-hLx||p0.x>hLx||p0.y<-hLy||p0.y>hLy||p0.z<-hLz||p0.z>hLz) break;
 			const float3 un=interpolate_u(p0,u);
-			const float ul=length(un);
-			if(ul<=1.0e-6f) break;
-			const float inv_ul=1.0f/ul;
-			const float speed_disturbance=fabs(ul-U_INF)/fmax(U_INF,1.0e-6f);
-			const float direction_disturbance=1.0f-fmin(1.0f,fmax(-1.0f,un.x*inv_ul));
-			const bool disturbed=speed_disturbance>=SPEED_THRESHOLD||direction_disturbance>=DIRECTION_THRESHOLD;
+			const float u2=dot(un,un);
+			if(u2<=1.0e-12f) break;
+			const float inv_ul=rsqrt(u2);
+			const float ul=u2*inv_ul;
+			const bool disturbed=fabs(ul-U_INF)>=SPEED_DELTA || un.x*inv_ul<=DIRECTION_DOT_MAX;
+
+			if(!vehicle_affected && disturbed) {
+				const uint3 q=closest_coordinates(p0);
+				bool near_vehicle=(flags[(uxx)q.x+(uxx)(q.y+q.z*def_Ny)*(uxx)def_Nx]&TYPE_S)!=0u;
+				for(int dz=-VEHICLE_RADIUS;dz<=VEHICLE_RADIUS&&!near_vehicle;dz++) {
+					const int zz=(int)q.z+dz;
+					if(zz<0||zz>=(int)def_Nz) continue;
+					for(int dy=-VEHICLE_RADIUS;dy<=VEHICLE_RADIUS&&!near_vehicle;dy++) {
+						const int yy=(int)q.y+dy;
+						if(yy<0||yy>=(int)def_Ny) continue;
+						for(int dx=-VEHICLE_RADIUS;dx<=VEHICLE_RADIUS;dx++) {
+							if(dx*dx+dy*dy+dz*dz>VEHICLE_RADIUS2) continue;
+							const int xx=(int)q.x+dx;
+							if(xx<0||xx>=(int)def_Nx) continue;
+							const uxx vn=(uxx)xx+(uxx)(yy+zz*def_Ny)*(uxx)def_Nx;
+							if(flags[vn]&TYPE_S){near_vehicle=true;break;}
+						}
+					}
+				}
+				if(near_vehicle) vehicle_affected=true;
+			}
+
 			const float3 p1=p0+(dt*inv_ul)*un;
 			if(p1.x<-hLx||p1.x>hLx||p1.y<-hLy||p1.y>hLy||p1.z<-hLz||p1.z>hLz) break;
-			if(disturbed){
-				const uint3 q=closest_coordinates(p0);
-				const uxx nn=(uxx)q.x+(uxx)(q.y+q.z*def_Ny)*(uxx)def_Nx;
-				if(!(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))){
-					int c=colorscale_rainbow(def_scale_u*ul);
-					draw_line(p0,p1,c,camera_cache,bitmap,zbuffer);
+
+			if(vehicle_affected) {
+				if((l&1u)==0u) { pair_start=p0; pair_disturbed=disturbed; }
+				else {
+					pair_disturbed=pair_disturbed||disturbed;
+					if(pair_disturbed) {
+						const uint3 q=closest_coordinates(pair_start);
+						const uxx nn=(uxx)q.x+(uxx)(q.y+q.z*def_Ny)*(uxx)def_Nx;
+						if(!(flags[nn]&(TYPE_S|TYPE_E|TYPE_I|TYPE_G))) {
+							const int c=colorscale_rainbow(def_scale_u*ul);
+							draw_line(pair_start,p1,c,camera_cache,zbuffer,bitmap);
+						}
+					}
 				}
 			}
 			p0=p1;
