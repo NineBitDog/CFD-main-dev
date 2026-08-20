@@ -15,8 +15,7 @@ def patch_kernel() -> bool:
         s = s.replace(old_ramp, new_ramp, 1)
 
     # Do not inject a second interpolation helper. FluidX3D already provides
-    # interpolate_u() after load3()/closest_coordinates(), and the custom
-    # streamline path should use that exact implementation.
+    # interpolate_u() in this fork. Its signature is interpolate_u(p, u).
     duplicate_helper_start = s.find(")+R(float3 interpolate_u_streamline(")
     if duplicate_helper_start >= 0:
         duplicate_helper_end = s.find(")+R(float3 load3(", duplicate_helper_start)
@@ -69,7 +68,7 @@ def patch_kernel() -> bool:
 \t\tfloat3 p0=p;
 \t\tfor(uint l=0u;l<def_streamline_length/2u;l++) {
 \t\t\tif(p0.x<-hLx||p0.x>hLx||p0.y<-hLy||p0.y>hLy||p0.z<-hLz||p0.z>hLz) break;
-\t\t\tconst float3 un=interpolate_u(u,p0);
+\t\t\tconst float3 un=interpolate_u(p0,u);
 \t\t\tconst float ul=length(un);
 \t\t\tif(ul<=1.0e-6f) break;
 \t\t\tconst float inv_ul=1.0f/ul;
