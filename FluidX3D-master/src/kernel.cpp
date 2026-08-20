@@ -154,9 +154,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 	const float3 pos = (float3)(camera_cache[ 2], camera_cache[ 3], camera_cache[ 4])-(float3)(def_domain_offset_x, def_domain_offset_y, def_domain_offset_z);
 	const float3 Rz  = (float3)(camera_cache[11], camera_cache[12], camera_cache[13]);
 	const float3 d = p-Rz*(dis/zoom)-pos; // distance vector between p and camera position
-	const float nl2 = sq(normal.x)+sq(normal.y)+sq(normal.z); // only one rsqrt instead of two
-	const float dl2 = sq(d.x)+sq(d.y)+sq(d.z);
-	return color_mul(c, max(1.5f*fabs(dot(normal, d))*rsqrt(nl2*dl2), 0.3f));
+	const float nl2 = fma(normal.x, normal.x, fma(normal.y, normal.y, sq(normal.z))); // only one rsqrt instead of two
+	const float dl2 = fma(d.x, d.x, fma(d.y, d.y, sq(d.z)));
+	return color_mul(c, max(1.25f*fabs(dot(normal, d))*rsqrt(nl2*dl2), 0.3f));
 )+"#else"+R( // GRAPHICS_TRANSPARENCY
 	return c; // disable flat shading, just return input color
 )+"#endif"+R( // GRAPHICS_TRANSPARENCY
@@ -168,24 +168,23 @@ string opencl_c_container() { return R( // ########################## begin of O
 		case +1: return x<def_screen_width/2||x>=def_screen_width  ||y<0||y>=def_screen_height; // right half
 	}
 }
-)+R(void draw(const int x, const int y, const float z, const int color, global int* bitmap, volatile global int* zbuffer, const int stereo) {
+)+R(void draw(const int x, const int y, const float z, const int color, volatile global int* bitmap, volatile global int* zbuffer, const int stereo) {
 	const int index=x+y*def_screen_width, iz=(int)(z*1E3f); // use fixed-point int z-buffer and atomic_max to minimize noise in image, maximum render distance is 2.147E6f
+	if(!is_off_screen(x, y, stereo)) { // only draw if point is on screen
 )+"#ifndef GRAPHICS_TRANSPARENCY"+R(
-	if(!is_off_screen(x, y, stereo)&&iz>atomic_max(&zbuffer[index], iz)) bitmap[index] = color; // only draw if point is on screen and first in zbuffer
+		if(iz>atomic_max(&zbuffer[index], iz)) atomic_xchg(&bitmap[index], color); // only draw if point is first in zbuffer
 )+"#else"+R( // GRAPHICS_TRANSPARENCY
-	if(!is_off_screen(x, y, stereo)) { // transparent rendering (not quite order-independent transparency, but elegant solution for order-reversible transparency which is good enough here)
-		const float transparency = GRAPHICS_TRANSPARENCY;
+		const float transparency = GRAPHICS_TRANSPARENCY; // transparent rendering (not quite order-independent transparency, but elegant solution for order-reversible transparency which is good enough here)
 		const uchar4 cc4=as_uchar4(color), cb4=as_uchar4(def_background_color);
 		const float3 fc = (float3)((float)cc4.x, (float)cc4.y, (float)cc4.z); // new pixel color that is behind topmost drawn pixel color
 		const float3 fb = (float3)((float)cb4.x, (float)cb4.y, (float)cb4.z); // background color
-		const bool is_front = iz>atomic_max(&zbuffer[index], iz);
 		const uchar4 cp4 = as_uchar4(bitmap[index]);
 		const float3 fp = (float3)((float)cp4.x, (float)cp4.y, (float)cp4.z); // current pixel color
 		const int draw_count = (int)cp4.w; // use alpha color value to store how often the pixel has been over-drawn already
-		const float3 fn = fp+(1.0f-transparency)*( is_front ? fc-fp : pown(transparency, draw_count)*(fc-fb)); // black magic: either over-draw colors back-to-front, or add back colors as correction terms
-		bitmap[index] = as_int((uchar4)((uchar)clamp(fn.x+0.5f, 0.0f, 255.0f), (uchar)clamp(fn.y+0.5f, 0.0f, 255.0f), (uchar)clamp(fn.z+0.5f, 0.0f, 255.0f), (uchar)min(draw_count+1, 255)));
-	}
+		const float3 fn = fp+(1.0f-transparency)*(iz>atomic_max(&zbuffer[index], iz) ? fc-fp : pown(transparency, draw_count)*(fc-fb)); // black magic: either over-draw colors back-to-front, or add back colors as correction terms
+		atomic_xchg(&bitmap[index], as_int((uchar4)((uchar)clamp(fn.x+0.5f, 0.0f, 255.0f), (uchar)clamp(fn.y+0.5f, 0.0f, 255.0f), (uchar)clamp(fn.z+0.5f, 0.0f, 255.0f), (uchar)min(draw_count+1, 255))));
 )+"#endif"+R( // GRAPHICS_TRANSPARENCY
+	}
 }
 )+R(bool convert(int* rx, int* ry, float* rz, const float3 p, const float* camera_cache, const int stereo) { // 3D -> 2D
 	const float zoom = camera_cache[0]; // fetch camera parameters (rotation matrix, camera position, etc.)
@@ -432,8 +431,10 @@ string opencl_c_container() { return R( // ########################## begin of O
 	vertex[11] = (float3)(0.0f, interpolate(v[3], v[7], iso), 1.0f);
 	cube *= 15u;
 	uint i; // number of triangle vertices
-	for(i=0u; i<15u&&triangle_table(cube+i)!=15u; i+=3u) { // create the triangles
-		triangles[i   ] = vertex[triangle_table(cube+i   )];
+	for(i=0u; i<15u; i+=3u) { // create the triangles
+		const uchar triangle_table_cube_i_0u_ = triangle_table(cube+i);
+		if(triangle_table_cube_i_0u_==15u) break;
+		triangles[i   ] = vertex[triangle_table_cube_i_0u_];
 		triangles[i+1u] = vertex[triangle_table(cube+i+1u)];
 		triangles[i+2u] = vertex[triangle_table(cube+i+2u)];
 	}
@@ -458,8 +459,10 @@ string opencl_c_container() { return R( // ########################## begin of O
 	vertex[11] = (float3)(0.0f, 0.5f, 1.0f);
 	cube *= 15u;
 	uint i; // number of triangle vertices
-	for(i=0u; i<15u&&triangle_table(cube+i)!=15u; i+=3u) { // create the triangles
-		triangles[i   ] = vertex[triangle_table(cube+i   )];
+	for(i=0u; i<15u; i+=3u) { // create the triangles
+		const uchar triangle_table_cube_i_0u_ = triangle_table(cube+i);
+		if(triangle_table_cube_i_0u_==15u) break;
+		triangles[i   ] = vertex[triangle_table_cube_i_0u_];
 		triangles[i+1u] = vertex[triangle_table(cube+i+1u)];
 		triangles[i+2u] = vertex[triangle_table(cube+i+2u)];
 	}
@@ -1500,21 +1503,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 )+"#else"+R( // EQUILIBRIUM_BOUNDARIES
 	if(flagsn_bo==TYPE_E) {
 		rhon = rho[n];
-		const uint xcoord = coordinates(n).x;
-		const bool inlet_side = xcoord <= 1u;
-		if(inlet_side) {
-			float ramp = clamp((float)t/(float)1000ul, 0.0f, 1.0f);
-			// Smoothstep startup avoids an impulse into the car at t=0.
-			ramp = ramp*ramp*(3.0f-2.0f*ramp);
-			uxn = 0.075f*ramp;
-			uyn = 0.0f;
-			uzn = 0.0f;
-		} else {
-			// Constant-velocity equilibrium outlet.
-			uxn = 0.075f;
-			uyn = 0.0f;
-			uzn = 0.0f;
-		}
+		uxn = 0.075f;
+		uyn = 0.0f;
+		uzn = 0.0f;
 	} else {
 		calculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn); // calculate density and velocity fields from fi
 	}
@@ -3588,14 +3579,10 @@ string opencl_c_container() { return R( // ########################## begin of O
 	for(uint i=0u; i<15u; i++) camera_cache[i] = camera[i];
 	const float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
 
-	// First pass: classify the streamline from the velocity field only.
-	// This is the original working behavior: compare against freestream and
-	// reject uniform-flow trajectories before any draw_line() call.
+	const float U_INF = 0.075f;
+	const float SPEED_DELTA = 0.00225f;
+	const float DIRECTION_DELTA = 0.02f;
 	bool affected = false;
-	const float U_inf = 0.075f;
-	const float speed_threshold = 0.03f;
-	const float direction_threshold = 0.02f;
-	const float3 freestream_dir = (float3)(1.0f, 0.0f, 0.0f);
 
 	for(float dt=-1.0f; dt<=1.0f && !affected; dt+=2.0f) {
 		float3 p1=p;
@@ -3609,20 +3596,14 @@ string opencl_c_container() { return R( // ########################## begin of O
 			const float3 un=load3(nn,u);
 			const float ul=length(un);
 			if(ul<=1.0e-6f) break;
-			const float speed_disturbance=fabs(ul-U_inf)/fmax(U_inf,1.0e-6f);
-			const float3 flow_dir=un/fmax(ul,1.0e-6f);
-			const float direction_disturbance=1.0f-dot(flow_dir,freestream_dir);
-			if(speed_disturbance>=speed_threshold || direction_disturbance>=direction_threshold) { affected=true; break; }
-			const float3 next_p1=p1+(dt/ul)*un;
-			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
-			p1=next_p1;
+			const float inv_ul=1.0f/ul;
+			if(fabs(ul-U_INF)>=SPEED_DELTA || (ul-un.x)>=DIRECTION_DELTA*ul) { affected=true; break; }
+			p1 += (dt*inv_ul)*un;
 			if(def_scale_u*ul<0.1f) break;
 		}
 	}
 	if(!affected) return;
 
-	// Second pass: render only affected trajectories with the original native
-	// FluidX3D coloring and full forward/backward streamline path.
 	for(float dt=-1.0f; dt<=1.0f; dt+=2.0f) {
 		float3 p0, p1=p;
 		for(uint l=0u; l<def_streamline_length/2u; l++) {
@@ -3636,9 +3617,8 @@ string opencl_c_container() { return R( // ########################## begin of O
 			const float ul=length(un);
 			if(ul<=1.0e-6f) break;
 			p0=p1;
-			const float3 next_p1=p1+(dt/ul)*un;
-			if(next_p1.x<-hLx || next_p1.x>hLx || next_p1.y<-hLy || next_p1.y>hLy || next_p1.z<-hLz || next_p1.z>hLz) break;
-			p1=next_p1;
+			p1 += (dt/ul)*un;
+			if(p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 			int c=0;
 			switch(field_mode) {
 				case 0: c=colorscale_rainbow(def_scale_u*ul); break;

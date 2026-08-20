@@ -1029,7 +1029,7 @@ void LBM_Domain::Graphics::allocate(Device &device) {
       Kernel(device, lbm->get_N(), "graphics_flags", camera_parameters, bitmap,
              zbuffer, lbm->flags);
   kernel_graphics_flags_mc =
-      Kernel(device, lbm->get_N(), "graphics_flags_mc", camera_parameters,
+      Kernel(device, (ulong)(lbm->get_Nx()-1u)*(ulong)(lbm->get_Ny()-1u)*(ulong)(lbm->get_Nz()-1u), "graphics_flags_mc", camera_parameters,
              bitmap, zbuffer, lbm->flags);
   kernel_graphics_field = Kernel(
       device, lbm->get_D() == 1u ? camera.width * camera.height : lbm->get_N(),
@@ -1068,7 +1068,7 @@ void LBM_Domain::Graphics::allocate(Device &device) {
   skybox = Memory<int>(device, skybox_image->width() * skybox_image->height(),
                        1u, skybox_image->data());
   kernel_graphics_rasterize_phi =
-      Kernel(device, lbm->get_N(), "graphics_rasterize_phi", camera_parameters,
+      Kernel(device, (ulong)(lbm->get_Nx()-1u)*(ulong)(lbm->get_Ny()-1u)*(ulong)(lbm->get_Nz()-1u), "graphics_rasterize_phi", camera_parameters,
              bitmap, zbuffer, lbm->phi);
   kernel_graphics_raytrace_phi =
       Kernel(device, bitmap.length(), "graphics_raytrace_phi",
