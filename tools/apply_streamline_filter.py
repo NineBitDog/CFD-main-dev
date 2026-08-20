@@ -1,5 +1,4 @@
 from pathlib import Path
-import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL = ROOT / "FluidX3D-master" / "src" / "kernel.cpp"
@@ -33,8 +32,6 @@ def patch_kernel() -> bool:
     # ------------------------------------------------------------
     # Replace the streamline filter body while preserving the exact native
     # kernel signature and its D2Q9/D3Q19 seed generation.
-    # The classification test avoids two divides per sample and uses the
-    # fixed +X freestream direction of this vehicle setup.
     # ------------------------------------------------------------
     start = s.find("kernel void graphics_streamline")
     if start < 0:
@@ -71,7 +68,7 @@ def patch_kernel() -> bool:
 \tconst float hLx=0.5f*(float)(def_Nx-2u*(def_Dx>1u)), hLy=0.5f*(float)(def_Ny-2u*(def_Dy>1u)), hLz=0.5f*(float)(def_Nz-2u*(def_Dz>1u));
 
 \tconst float U_INF = 0.075f;
-\tconst float SPEED_DELTA = 0.00225f; // 3% of U_INF
+\tconst float SPEED_DELTA = 0.00225f;
 \tconst float DIRECTION_DELTA = 0.02f;
 \tbool affected = false;
 
@@ -88,7 +85,6 @@ def patch_kernel() -> bool:
 \t\t\tconst float ul=length(un);
 \t\t\tif(ul<=1.0e-6f) break;
 \t\t\tconst float inv_ul=1.0f/ul;
-\t\t\t// For +X freestream: direction disturbance = 1 - u.x/|u|.
 \t\t\tif(fabs(ul-U_INF)>=SPEED_DELTA || (ul-un.x)>=DIRECTION_DELTA*ul) { affected=true; break; }
 \t\t\tp1 += (dt*inv_ul)*un;
 \t\t\tif(def_scale_u*ul<0.1f) break;
@@ -109,8 +105,7 @@ def patch_kernel() -> bool:
 \t\t\tconst float ul=length(un);
 \t\t\tif(ul<=1.0e-6f) break;
 \t\t\tp0=p1;
-\t\t\tconst float inv_ul=1.0f/ul;
-\t\t\tp1 += (dt*inv_ul)*un;
+\t\t\tp1 += (dt/ul)*un;
 \t\t\tif(p1.x<-hLx || p1.x>hLx || p1.y<-hLy || p1.y>hLy || p1.z<-hLz || p1.z>hLz) break;
 \t\t\tint c=0;
 \t\t\tswitch(field_mode) {
@@ -124,8 +119,6 @@ def patch_kernel() -> bool:
 \t\t}
 \t}
 '''
-
-    # Unescape the raw Python representation used above.
     new_body = new_body.replace("\\n", "\n").replace("\\t", "\t")
     s = s[:body_start+1] + new_body + "\t}" + s[end:]
     changed = True
@@ -135,65 +128,9 @@ def patch_kernel() -> bool:
     return changed
 
 
-def patch_defines() -> bool:
-    s = DEFINES.read_text(encoding="utf-8")
-    old = '''// Wind-tunnel startup: begin from rest and smoothly ramp the inlet to the target speed.\n#define INLET_VELOCITY 0.075f\n#define OUTLET_VELOCITY 0.075f\n#define INLET_RAMP_STEPS 50000ul\n'''
-    new = '''#define INLET_VELOCITY 0.075f\n#define OUTLET_VELOCITY 0.075f\n'''
-    s2, changed = replace_once(s, old, new, "defines ramp")
-    if changed:
-        DEFINES.write_text(s2, encoding="utf-8")
-    return changed
-
-
-def patch_setup() -> bool:
-    s = SETUP.read_text(encoding="utf-8")
-    old = '''        // Start the entire fluid at rest. The OpenCL stream-collide kernel ramps\n        // the inlet velocity from 0 to INLET_VELOCITY after initialization.\n        if(lbm.flags[n]!=TYPE_S) {\n            lbm.u.x[n] = 0.0f;\n            lbm.u.y[n] = 0.0f;\n            lbm.u.z[n] = 0.0f;\n        }\n'''
-    new = '''        // Initialize the fluid directly at the target inlet speed.\n        if(lbm.flags[n]!=TYPE_S) {\n            lbm.u.x[n] = lbm_u;\n            lbm.u.y[n] = 0.0f;\n            lbm.u.z[n] = 0.0f;\n        }\n'''
-    s2, changed = replace_once(s, old, new, "setup startup")
-    if changed:
-        SETUP.write_text(s2, encoding="utf-8")
-    return changed
-
-
-def patch_main() -> bool:
-    s = MAIN.read_text(encoding="utf-8")
-    original = s
-    s = s.replace("lbm.run(20u, lbm_T); // Run slightly larger batches for better efficiency", "lbm.run(100u, lbm_T); // Larger batches reduce host-side launch overhead")
-    s = s.replace("            time.sleep(0.1)  # Give OS time to release file\n", "")
-    s = s.replace("            time.sleep(0.1)  # Give OS time to flush\n", "")
-    return s != original and not MAIN.write_text(s, encoding="utf-8")
-
-
-def patch_solver() -> bool:
-    s = SOLVER.read_text(encoding="utf-8")
-    original = s
-
-    old = '''        v = wp.vec3(0.0, 0.0, 0.0)\n\n        if (ix >= 0 and ix < grid_res and\n            iy >= 0 and iy < grid_res and\n            iz >= 0 and iz < grid_res):\n\n            v = velocity_field[ix, iy, iz]\n\n            # A streamline qualifies when any traced point comes within\n            # contact_radius lattice cells of the vehicle surface.\n            for dz in range(-contact_radius, contact_radius + 1):\n                for dy in range(-contact_radius, contact_radius + 1):\n                    for dx in range(-contact_radius, contact_radius + 1):\n                        nx = ix + dx\n                        ny = iy + dy\n                        nz = iz + dz\n                        if (nx >= 0 and nx < grid_res and\n                            ny >= 0 and ny < grid_res and\n                            nz >= 0 and nz < grid_res):\n                            if vehicle_surface[nx, ny, nz] != 0:\n                                touched_vehicle = True\n\n            speed = wp.length(v)\n'''
-    new = '''        if (ix >= 0 and ix < grid_res and\n            iy >= 0 and iy < grid_res and\n            iz >= 0 and iz < grid_res):\n\n            v = velocity_field[ix, iy, iz]\n\n            # Contact is pre-dilated once on the CPU, so tracing needs only\n            # one byte load instead of a (2r+1)^3 neighborhood search.\n            if not touched_vehicle and vehicle_contact_mask[ix, iy, iz] != 0:\n                touched_vehicle = True\n\n            speed = wp.length(v)\n'''
-    s = s.replace(old, new)
-    s = s.replace("vehicle_surface: wp.array3d(dtype=wp.uint8),", "vehicle_contact_mask: wp.array3d(dtype=wp.uint8),")
-    s = s.replace("self.wp_vehicle_surface = wp.array(\n            self.vehicle_surface_cpu,", "self.wp_contact_mask = wp.array(\n            self.vehicle_contact_mask_cpu,")
-    s = s.replace("self.vehicle_surface_cpu = np.zeros(\n            (resolution, resolution, resolution), dtype=np.uint8, order='C'\n        )\n        self._build_vehicle_surface_mask(stl_path)", "self.vehicle_contact_mask_cpu = np.zeros(\n            (resolution, resolution, resolution), dtype=np.uint8, order='C'\n        )\n        self._build_vehicle_contact_mask(stl_path)")
-    s = s.replace("def _build_vehicle_surface_mask(self, stl_path):", "def _build_vehicle_contact_mask(self, stl_path):")
-    s = s.replace("self.vehicle_surface_cpu[\n                indices[:, 0], indices[:, 1], indices[:, 2]\n            ] = 1", "surface = np.zeros_like(self.vehicle_contact_mask_cpu)\n            surface[indices[:, 0], indices[:, 1], indices[:, 2]] = 1\n\n            # Build a spherical contact mask once. Radius 2 contains 33\n            # offsets, versus 125 checks for every point of every line.\n            r = self.streamline_contact_radius\n            offsets = []\n            for dz in range(-r, r + 1):\n                for dy in range(-r, r + 1):\n                    for dx in range(-r, r + 1):\n                        if dx*dx + dy*dy + dz*dz <= r*r:\n                            offsets.append((dx, dy, dz))\n\n            ys, xs, zs = np.nonzero(surface)\n            for dx, dy, dz in offsets:\n                x = xs + dx\n                y = ys + dy\n                z = zs + dz\n                valid = (x >= 0) & (x < self.resolution) & (y >= 0) & (y < self.resolution) & (z >= 0) & (z < self.resolution)\n                self.vehicle_contact_mask_cpu[x[valid], y[valid], z[valid]] = 1")
-    s = s.replace("self.wp_vehicle_surface,", "self.wp_contact_mask,")
-
-    # Explicitly keep the number of traced lines unchanged; the large gain is
-    # from removing the per-point 3-D neighborhood scan.
-    if s == original:
-        return False
-    SOLVER.write_text(s, encoding="utf-8")
-    return True
-
-
 def main() -> None:
-    changed = []
-    if patch_kernel(): changed.append("kernel.cpp")
-    if patch_defines(): changed.append("defines.hpp")
-    if patch_setup(): changed.append("setup.cpp")
-    if patch_main(): changed.append("main.py")
-    if patch_solver(): changed.append("solver.py")
-    print("Optimized files:" if changed else "No changes needed.", ", ".join(changed))
+    patch_kernel()
+    print("Streamline kernel patch applied.")
 
 
 if __name__ == "__main__":
